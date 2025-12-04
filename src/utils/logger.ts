@@ -155,12 +155,19 @@ export const logHttp = (message: string, meta?: any) => {
 }
 
 /**
- * Create logs directory on startup
+ * Create logs directory on startup (with error handling)
  */
 import fs from 'fs'
-if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir, { recursive: true })
-  logger.info('Created logs directory', { path: logsDir })
+try {
+  if (!fs.existsSync(logsDir)) {
+    fs.mkdirSync(logsDir, { recursive: true })
+    console.log(`✅ Created logs directory: ${logsDir}`)
+  }
+} catch (error) {
+  // Don't crash if logs directory creation fails
+  // The app can still run, just without file logging
+  console.warn(`⚠️  Warning: Failed to create logs directory: ${logsDir}`)
+  console.warn(`⚠️  File logging may not work. Error:`, error)
 }
 
 export default logger
