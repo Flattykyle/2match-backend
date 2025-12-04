@@ -1,0 +1,278 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// User Model
+// ============================================
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  username  String   @unique
+
+  // Personal Information
+  firstName   String
+  lastName    String
+  dateOfBirth DateTime
+  gender      String
+
+  // Profile Details
+  bio         String?  @db.Text
+
+  // Location stored as JSON with city, country, and coordinates
+  locationCity    String?
+  locationCountry String?
+  latitude        Float?
+  longitude       Float?
+
+  lookingFor      String   // 'dating', 'hookup', or 'both'
+
+  // Arrays
+  profilePictures String[] // Array of URLs, max 6 enforced in app logic
+  hobbies         String[]
+  talents         String[]
+  interests       String[]
+
+  // Preferences stored as JSON
+  // Structure: { ageMin: number, ageMax: number, distance: number, genderPreference: string }
+  preferences Json?
+
+  // Authentication fields
+  refreshToken        String?
+  refreshTokenExpiry  DateTime?
+  resetPasswordToken  String?
+  resetPasswordExpiry DateTime?
+
+  // Verification fields
+  emailVerified       Boolean  @default(false)
+  emailVerificationToken String?
+  emailVerificationExpiry DateTime?
+  phoneNumber         String?
+  phoneVerified       Boolean  @default(false)
+  phoneVerificationToken String?
+  photoVerified       Boolean  @default(false)
+  photoVerificationStatus String @default("pending") // 'pending', 'approved', 'rejected'
+  photoVerificationSubmittedAt DateTime?
+
+  // Online status
+  isOnline            Boolean  @default(false)
+
+  // Timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastActive  DateTime @default(now())
+
+  // Relations
+  matchesAsUser1      Match[]        @relation("User1Matches")
+  matchesAsUser2      Match[]        @relation("User2Matches")
+  sentMessages        Message[]      @relation("SentMessages")
+  receivedMessages    Message[]      @relation("ReceivedMessages")
+  conversationsAsUser1 Conversation[] @relation("User1Conversations")
+  conversationsAsUser2 Conversation[] @relation("User2Conversations")
+  likesGiven          Like[]         @relation("LikesGiven")
+  likesReceived       Like[]         @relation("LikesReceived")
+  passesGiven         Pass[]         @relation("PassesGiven")
+  passesReceived      Pass[]         @relation("PassesReceived")
+  blocksGiven         Block[]        @relation("BlocksGiven")
+  blocksReceived      Block[]        @relation("BlocksReceived")
+  profileViewsGiven   ProfileView[]  @relation("ProfileViewsGiven")
+  profileViewsReceived ProfileView[] @relation("ProfileViewsReceived")
+  reportsSubmitted    Report[]       @relation("ReportsSubmitted")
+  reportsReceived     Report[]       @relation("ReportsReceived")
+
+  @@index([email])
+  @@index([username])
+  @@index([gender])
+  @@index([lookingFor])
+  @@index([lastActive])
+  @@index([latitude, longitude])
+  @@index([isOnline])
+  @@index([emailVerified])
+  @@index([photoVerified])
+  @@map("users")
+}
+
+// ============================================
+// Match Model
+// ============================================
+model Match {
+  id                  String   @id @default(uuid())
+  userId1             String
+  userId2             String
+  compatibilityScore  Int      // Stored as integer (0-100 for percentage)
+  status              String   @default("pending") // 'pending', 'accepted', 'rejected'
+  matchedAt           DateTime @default(now())
+
+  // Relations
+  user1 User @relation("User1Matches", fields: [userId1], references: [id], onDelete: Cascade)
+  user2 User @relation("User2Matches", fields: [userId2], references: [id], onDelete: Cascade)
+
+  @@unique([userId1, userId2])
+  @@index([userId1])
+  @@index([userId2])
+  @@index([status])
+  @@index([compatibilityScore])
+  @@index([matchedAt])
+  @@map("matches")
+}
+
+// ============================================
+// Conversation Model
+// ============================================
+model Conversation {
+  id              String   @id @default(uuid())
+  user1Id         String
+  user2Id         String
+  lastMessageAt   DateTime?
+  createdAt       DateTime @default(now())
+
+  // Relations
+  user1    User      @relation("User1Conversations", fields: [user1Id], references: [id], onDelete: Cascade)
+  user2    User      @relation("User2Conversations", fields: [user2Id], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@unique([user1Id, user2Id])
+  @@index([user1Id])
+  @@index([user2Id])
+  @@index([lastMessageAt])
+  @@map("conversations")
+}
+
+// ============================================
+// Message Model
+// ============================================
+model Message {
+  id             String   @id @default(uuid())
+  senderId       String
+  receiverId     String
+  conversationId String
+  content        String   @db.Text
+  isRead         Boolean  @default(false)
+  sentAt         DateTime @default(now())
+
+  // Relations
+  sender       User         @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver     User         @relation("ReceivedMessages", fields: [receiverId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([senderId])
+  @@index([receiverId])
+  @@index([conversationId])
+  @@index([isRead])
+  @@index([sentAt])
+  @@map("messages")
+}
+
+// ============================================
+// Like Model
+// ============================================
+model Like {
+  id          String   @id @default(uuid())
+  likerId     String
+  likedUserId String
+  createdAt   DateTime @default(now())
+
+  // Relations
+  liker     User @relation("LikesGiven", fields: [likerId], references: [id], onDelete: Cascade)
+  likedUser User @relation("LikesReceived", fields: [likedUserId], references: [id], onDelete: Cascade)
+
+  @@unique([likerId, likedUserId])
+  @@index([likerId])
+  @@index([likedUserId])
+  @@index([createdAt])
+  @@map("likes")
+}
+
+// ============================================
+// Pass Model
+// ============================================
+model Pass {
+  id           String   @id @default(uuid())
+  passerId     String
+  passedUserId String
+  createdAt    DateTime @default(now())
+
+  // Relations
+  passer     User @relation("PassesGiven", fields: [passerId], references: [id], onDelete: Cascade)
+  passedUser User @relation("PassesReceived", fields: [passedUserId], references: [id], onDelete: Cascade)
+
+  @@unique([passerId, passedUserId])
+  @@index([passerId])
+  @@index([passedUserId])
+  @@index([createdAt])
+  @@map("passes")
+}
+
+// ============================================
+// Block Model
+// ============================================
+model Block {
+  id            String   @id @default(uuid())
+  blockerId     String
+  blockedUserId String
+  createdAt     DateTime @default(now())
+
+  // Relations
+  blocker     User @relation("BlocksGiven", fields: [blockerId], references: [id], onDelete: Cascade)
+  blockedUser User @relation("BlocksReceived", fields: [blockedUserId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedUserId])
+  @@index([blockerId])
+  @@index([blockedUserId])
+  @@index([createdAt])
+  @@map("blocks")
+}
+
+// ============================================
+// ProfileView Model
+// ============================================
+model ProfileView {
+  id         String   @id @default(uuid())
+  viewerId   String
+  viewedUserId String
+  viewedAt   DateTime @default(now())
+
+  // Relations
+  viewer     User @relation("ProfileViewsGiven", fields: [viewerId], references: [id], onDelete: Cascade)
+  viewedUser User @relation("ProfileViewsReceived", fields: [viewedUserId], references: [id], onDelete: Cascade)
+
+  @@index([viewerId])
+  @@index([viewedUserId])
+  @@index([viewedAt])
+  @@map("profile_views")
+}
+
+// ============================================
+// Report Model
+// ============================================
+model Report {
+  id              String   @id @default(uuid())
+  reporterId      String
+  reportedUserId  String
+  reason          String   // 'inappropriate_content', 'fake_profile', 'harassment', 'spam', 'other'
+  description     String?  @db.Text
+  status          String   @default("pending") // 'pending', 'reviewed', 'action_taken', 'dismissed'
+  reviewedBy      String?  // Admin user ID
+  reviewedAt      DateTime?
+  actionTaken     String?  // 'warning', 'suspension', 'ban', 'none'
+  createdAt       DateTime @default(now())
+
+  // Relations
+  reporter       User @relation("ReportsSubmitted", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUser   User @relation("ReportsReceived", fields: [reportedUserId], references: [id], onDelete: Cascade)
+
+  @@index([reporterId])
+  @@index([reportedUserId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("reports")
+}
