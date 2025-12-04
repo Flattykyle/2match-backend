@@ -45,22 +45,32 @@ import { initializeRedis, closeRedis } from './config/redis'
 // Load environment variables
 dotenv.config()
 
-// Initialize Redis
-initializeRedis()
-
 const app = express()
 const httpServer = http.createServer(app)
 const PORT = process.env.PORT || 3000
 
-// Initialize Sentry for error tracking (must be first)
-initializeSentry(app)
+// Debug logging for deployment
+console.log('='.repeat(60))
+console.log('🚀 Starting 2-Match API Server')
+console.log('='.repeat(60))
+console.log(`📍 PORT: ${PORT}`)
+console.log(`🌍 NODE_ENV: ${process.env.NODE_ENV || 'development'}`)
+console.log(`🔗 Binding to: 0.0.0.0:${PORT}`)
+console.log('='.repeat(60))
 
-// Sentry request handler (must be first middleware)
-app.use(sentryRequestHandler())
-app.use(sentryTracingHandler())
+// Initialize Sentry for error tracking (with error handling)
+try {
+  console.log('⚙️  Initializing Sentry...')
+  initializeSentry(app)
+  console.log('✅ Sentry initialized successfully')
 
-// Setup Socket.io
-setupSocket(httpServer)
+  // Sentry request handler (must be first middleware)
+  app.use(sentryRequestHandler())
+  app.use(sentryTracingHandler())
+} catch (error) {
+  console.error('⚠️  Warning: Sentry initialization failed:', error)
+  console.log('📝 Server will continue without Sentry error tracking')
+}
 
 // Compression middleware (compress responses)
 app.use(compression({
@@ -135,74 +145,147 @@ app.use(sentryErrorHandler())
 // Custom error handler
 app.use(errorHandler)
 
-// Start server
-httpServer.listen(PORT as number, '0.0.0.0', () => {
+// CRITICAL: Start server and bind to port FIRST (before initializing optional services)
+// This ensures Render can detect the open port quickly
+console.log('='.repeat(60))
+console.log('🔌 Starting HTTP server and binding to port...')
+httpServer.listen(PORT as number, '0.0.0.0', async () => {
+  console.log('='.repeat(60))
+  console.log('✅ HTTP SERVER IS LISTENING')
+  console.log(`🌐 Server is running on http://0.0.0.0:${PORT}`)
+  console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`)
+  console.log('='.repeat(60))
+
   logInfo('Server started successfully', {
     port: PORT,
     environment: process.env.NODE_ENV || 'development',
-    websocket: 'ready',
+    host: '0.0.0.0',
   })
 
-  // Also log to console for visibility
-  console.log(`🚀 Server is running on http://localhost:${PORT}`)
-  console.log(`📝 Environment: ${process.env.NODE_ENV || 'development'}`)
-  console.log(`💬 WebSocket server is ready`)
+  // Now initialize optional services asynchronously (non-blocking)
+  console.log('⚙️  Initializing optional services...')
+
+  // Initialize Socket.io (with error handling)
+  try {
+    console.log('⚙️  Setting up Socket.io...')
+    setupSocket(httpServer)
+    console.log('✅ Socket.io initialized successfully')
+    logInfo('Socket.io setup complete')
+  } catch (error) {
+    console.error('⚠️  Warning: Socket.io setup failed:', error)
+    console.log('📝 Server will continue without real-time messaging')
+    logError('Socket.io setup failed', error as Error)
+  }
+
+  // Initialize Redis (with error handling, non-blocking)
+  try {
+    console.log('⚙️  Connecting to Redis...')
+    await initializeRedis()
+    console.log('✅ Redis connected successfully')
+    logInfo('Redis connection established')
+  } catch (error) {
+    console.error('⚠️  Warning: Redis connection failed:', error)
+    console.log('📝 Server will continue without Redis caching')
+    logError('Redis initialization failed', error as Error)
+  }
+
+  console.log('='.repeat(60))
+  console.log('🎉 2-Match API is fully operational!')
+  console.log('='.repeat(60))
 })
 
-// Handle port in use error
+// Handle server errors
 httpServer.on('error', (error: NodeJS.ErrnoException) => {
+  console.error('='.repeat(60))
+  console.error('❌ HTTP SERVER ERROR')
+  console.error('='.repeat(60))
+
   if (error.code === 'EADDRINUSE') {
-    logError(`Port ${PORT} is already in use`, error)
     console.error(`❌ Port ${PORT} is already in use`)
-    console.log(`💡 Try running: npx kill-port ${PORT}`)
-    process.exit(1)
+    console.error(`💡 Try running: npx kill-port ${PORT}`)
+    logError(`Port ${PORT} is already in use`, error)
+  } else if (error.code === 'EACCES') {
+    console.error(`❌ Permission denied to bind to port ${PORT}`)
+    console.error(`💡 Try using a port above 1024 or run with elevated privileges`)
+    logError(`Permission denied for port ${PORT}`, error)
   } else {
+    console.error(`❌ Server error (${error.code}):`, error.message)
+    console.error('Full error:', error)
     logError('Server error', error)
-    console.error('❌ Server error:', error)
-    process.exit(1)
   }
+
+  console.error('='.repeat(60))
+  process.exit(1)
+})
+
+// Log when server is closing
+httpServer.on('close', () => {
+  console.log('🔌 HTTP server closed')
+  logInfo('HTTP server closed')
 })
 
 // Graceful shutdown
-process.on('SIGTERM', async () => {
-  logInfo('SIGTERM received, shutting down gracefully...')
-  console.log('👋 SIGTERM received, shutting down gracefully...')
+const shutdown = async (signal: string) => {
+  console.log('\n' + '='.repeat(60))
+  console.log(`👋 ${signal} received, shutting down gracefully...`)
+  console.log('='.repeat(60))
+  logInfo(`${signal} received, shutting down gracefully...`)
 
-  // Close Redis connection
-  await closeRedis()
+  // Close Redis connection (with timeout)
+  try {
+    console.log('🔌 Closing Redis connection...')
+    await Promise.race([
+      closeRedis(),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Redis close timeout')), 5000)
+      ),
+    ])
+    console.log('✅ Redis connection closed')
+  } catch (error) {
+    console.error('⚠️  Warning: Redis close failed or timed out:', error)
+    logError('Redis close failed', error as Error)
+  }
+
+  // Close HTTP server (with timeout)
+  console.log('🔌 Closing HTTP server...')
+  const closeTimeout = setTimeout(() => {
+    console.error('❌ Server close timeout, forcing shutdown')
+    process.exit(1)
+  }, 10000)
 
   httpServer.close(() => {
+    clearTimeout(closeTimeout)
+    console.log('✅ Server closed successfully')
+    console.log('='.repeat(60))
     logInfo('Server closed successfully')
-    console.log('✅ Server closed')
     process.exit(0)
   })
-})
+}
 
-process.on('SIGINT', async () => {
-  logInfo('SIGINT received, shutting down gracefully...')
-  console.log('\n👋 SIGINT received, shutting down gracefully...')
-
-  // Close Redis connection
-  await closeRedis()
-
-  httpServer.close(() => {
-    logInfo('Server closed successfully')
-    console.log('✅ Server closed')
-    process.exit(0)
-  })
-})
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))
 
 // Handle uncaught exceptions
 process.on('uncaughtException', (error: Error) => {
+  console.error('='.repeat(60))
+  console.error('❌ UNCAUGHT EXCEPTION')
+  console.error('='.repeat(60))
+  console.error('Error:', error.message)
+  console.error('Stack:', error.stack)
+  console.error('='.repeat(60))
   logError('Uncaught Exception', error)
-  console.error('❌ Uncaught Exception:', error)
   process.exit(1)
 })
 
 // Handle unhandled promise rejections
-process.on('unhandledRejection', (reason: any) => {
+process.on('unhandledRejection', (reason: any, promise: Promise<any>) => {
+  console.error('='.repeat(60))
+  console.error('❌ UNHANDLED PROMISE REJECTION')
+  console.error('='.repeat(60))
+  console.error('Reason:', reason)
+  console.error('Promise:', promise)
+  console.error('='.repeat(60))
   logError('Unhandled Promise Rejection', reason)
-  console.error('❌ Unhandled Rejection:', reason)
   process.exit(1)
 })
 
