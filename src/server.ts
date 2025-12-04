@@ -136,7 +136,7 @@ app.use(sentryErrorHandler())
 app.use(errorHandler)
 
 // Start server
-httpServer.listen(PORT, () => {
+httpServer.listen(PORT as number, '0.0.0.0', () => {
   logInfo('Server started successfully', {
     port: PORT,
     environment: process.env.NODE_ENV || 'development',
