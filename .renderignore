@@ -1,0 +1,55 @@
+# Render Ignore File
+# Files and directories to exclude from Render deployment
+
+# Development files
+node_modules/
+*.log
+logs/
+*.tmp
+*.temp
+
+# Environment files (set via Render dashboard)
+.env
+.env.*
+!.env.example
+!.env.production.example
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+!README.md
+
+# Tests
+tests/
+test/
+*.test.ts
+*.test.js
+*.spec.ts
+*.spec.js
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Backups
+backups/
+*.sql
+*.sql.gz
+
+# Build artifacts (will be rebuilt)
+dist/
+build/
+
+# Scripts (if not needed in production)
+scripts/backup-database.sh
+scripts/restore-database.sh
+
+# Other
+coverage/
+.nyc_output/
