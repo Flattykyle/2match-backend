@@ -18,8 +18,8 @@ services:
         generateValue: true
       - key: 565a1e1e8bb969807a2a2b3d2e5fc7d75ede5a637820d60cc28858b283f864c8c5295d37f1ac1ab7bc91ed21717145f7533e0bb496763ca9ca9904064d6e6137
         generateValue: true
-      - key: PORT
-        value: 3000
+      # - key: PORT
+         # value: 3000
       # Add your other environment variables here
       - key: dfr07z2c6
         sync: false
