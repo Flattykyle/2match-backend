@@ -10,7 +10,7 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: postgresql://postgres:Franklineomollo5%21@db.jjaavtelyfbteukkykkj.supabase.co:5432/postgres
+      - key: postgresql://postgres.jjaavtelyfbteukkykkj:Franklineomollo5@aws-1-eu-north-1.pooler.supabase.com:6543/postgres
         fromDatabase:
           name: 2-Match
           property: connectionString
