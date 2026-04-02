@@ -1,0 +1,427 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ============================================
+// User Model
+// ============================================
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  username  String   @unique
+
+  // Personal Information
+  firstName   String
+  lastName    String
+  dateOfBirth DateTime
+  gender      String
+
+  // Profile Details
+  bio         String?  @db.Text
+
+  // Location stored as JSON with city, country, and coordinates
+  locationCity    String?
+  locationCountry String?
+  latitude        Float?
+  longitude       Float?
+
+  lookingFor      String   // 'dating', 'hookup', or 'both'
+
+  // Arrays
+  profilePictures String[] // Array of URLs, max 6 enforced in app logic
+  hobbies         String[]
+  talents         String[]
+  interests       String[]
+
+  // Preferences stored as JSON
+  // Structure: { ageMin: number, ageMax: number, distance: number, genderPreference: string }
+  preferences Json?
+
+  // Authentication fields
+  refreshToken        String?
+  refreshTokenExpiry  DateTime?
+  resetPasswordToken  String?
+  resetPasswordExpiry DateTime?
+
+  // Verification fields
+  emailVerified       Boolean  @default(false)
+  emailVerificationToken String?
+  emailVerificationExpiry DateTime?
+  phoneNumber         String?
+  phoneVerified       Boolean  @default(false)
+  phoneVerificationToken String?
+  photoVerified       Boolean  @default(false)
+  photoVerificationStatus String @default("pending") // 'pending', 'approved', 'rejected'
+  photoVerificationSubmittedAt DateTime?
+
+  // Voice intro
+  voiceIntroUrl       String?
+  voiceIntroDuration  Int?     // Duration in seconds
+
+  // Subscription & Billing
+  subscriptionTier      String   @default("FREE") // 'FREE', 'PREMIUM', 'PLATINUM'
+  subscriptionExpiresAt DateTime?
+  stripeCustomerId      String?  @unique
+  stripeSubscriptionId  String?
+  weeklyBoostsRemaining Int      @default(0)
+  lastBoostResetAt      DateTime @default(now())
+  lastBoostedAt         DateTime?
+
+  // Safety / Comfort Zone settings
+  slowModeEnabled       Boolean  @default(false)
+  slowModeLimit         Int      @default(5)   // Max matches per day when slow mode on
+  activeHoursStart      Int?     // Hour 0-23, null = no restriction
+  activeHoursEnd        Int?     // Hour 0-23, null = no restriction
+  photoShieldEnabled    Boolean  @default(false)
+  emergencyContactName  String?
+  emergencyContactPhone String?
+
+  // Online status
+  isOnline            Boolean  @default(false)
+
+  // Timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  lastActive  DateTime @default(now())
+
+  // Relations
+  matchesAsUser1      Match[]        @relation("User1Matches")
+  matchesAsUser2      Match[]        @relation("User2Matches")
+  sentMessages        Message[]      @relation("SentMessages")
+  receivedMessages    Message[]      @relation("ReceivedMessages")
+  conversationsAsUser1 Conversation[] @relation("User1Conversations")
+  conversationsAsUser2 Conversation[] @relation("User2Conversations")
+  likesGiven          Like[]         @relation("LikesGiven")
+  likesReceived       Like[]         @relation("LikesReceived")
+  passesGiven         Pass[]         @relation("PassesGiven")
+  passesReceived      Pass[]         @relation("PassesReceived")
+  blocksGiven         Block[]        @relation("BlocksGiven")
+  blocksReceived      Block[]        @relation("BlocksReceived")
+  profileViewsGiven   ProfileView[]  @relation("ProfileViewsGiven")
+  profileViewsReceived ProfileView[] @relation("ProfileViewsReceived")
+  reportsSubmitted    Report[]       @relation("ReportsSubmitted")
+  reportsReceived     Report[]       @relation("ReportsReceived")
+  icebreakerAnswers   IcebreakerAnswer[]
+  vibeTags            VibeTag[]
+
+  @@index([email])
+  @@index([username])
+  @@index([gender])
+  @@index([lookingFor])
+  @@index([lastActive])
+  @@index([latitude, longitude])
+  @@index([isOnline])
+  @@index([emailVerified])
+  @@index([photoVerified])
+  @@map("users")
+}
+
+// ============================================
+// Match Model
+// ============================================
+model Match {
+  id                  String   @id @default(uuid())
+  userId1             String
+  userId2             String
+  compatibilityScore  Int      // Stored as integer (0-100 for percentage)
+  status              String   @default("pending") // 'pending', 'accepted', 'rejected'
+  icebreakerUnlocked  Boolean  @default(false)
+  matchedAt           DateTime @default(now())
+
+  // Relations
+  user1 User @relation("User1Matches", fields: [userId1], references: [id], onDelete: Cascade)
+  user2 User @relation("User2Matches", fields: [userId2], references: [id], onDelete: Cascade)
+  icebreakerAnswers IcebreakerAnswer[]
+
+  @@unique([userId1, userId2])
+  @@index([userId1])
+  @@index([userId2])
+  @@index([status])
+  @@index([compatibilityScore])
+  @@index([matchedAt])
+  // Compound indexes for optimized queries
+  @@index([userId1, status])          // Fast lookup: "my matches with status X"
+  @@index([userId2, status])          // Fast lookup: "matches where I'm user2 with status X"
+  @@index([userId1, matchedAt])       // Slow mode: count today's matches for user
+  @@index([userId2, matchedAt])       // Slow mode: count today's matches for user
+  @@map("matches")
+}
+
+// ============================================
+// Icebreaker Question Model
+// ============================================
+model IcebreakerQuestion {
+  id       String  @id @default(uuid())
+  text     String
+  options  Json    // Array of 4 option strings: ["opt1", "opt2", "opt3", "opt4"]
+  category String  // 'fun', 'values', 'lighthearted'
+  isActive Boolean @default(true)
+
+  // Relations
+  answers IcebreakerAnswer[]
+
+  @@index([isActive])
+  @@index([category])
+  @@map("icebreaker_questions")
+}
+
+// ============================================
+// Icebreaker Answer Model
+// ============================================
+model IcebreakerAnswer {
+  id         String   @id @default(uuid())
+  matchId    String
+  userId     String
+  questionId String
+  answer     String
+  answeredAt DateTime @default(now())
+
+  // Relations
+  match    Match              @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  user     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  question IcebreakerQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([matchId, userId, questionId])
+  @@index([matchId])
+  @@index([userId])
+  @@index([questionId])
+  @@map("icebreaker_answers")
+}
+
+// ============================================
+// Conversation Model
+// ============================================
+model Conversation {
+  id              String   @id @default(uuid())
+  user1Id         String
+  user2Id         String
+  requestStatus   String   @default("accepted") // 'pending', 'accepted', 'declined'
+  lastMessageAt   DateTime?
+  createdAt       DateTime @default(now())
+
+  // Relations
+  user1    User      @relation("User1Conversations", fields: [user1Id], references: [id], onDelete: Cascade)
+  user2    User      @relation("User2Conversations", fields: [user2Id], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@unique([user1Id, user2Id])
+  @@index([user1Id])
+  @@index([user2Id])
+  @@index([lastMessageAt])
+  @@index([requestStatus])
+  @@map("conversations")
+}
+
+// ============================================
+// Message Model
+// ============================================
+model Message {
+  id             String    @id @default(uuid())
+  senderId       String
+  receiverId     String
+  conversationId String
+  content        String    @db.Text
+  isRead         Boolean   @default(false)
+  readAt         DateTime?
+  expiresAt      DateTime? // Set to sentAt + 7 days; cleared when replied to
+  isDeleted      Boolean   @default(false) // Soft delete for expired messages
+  sentAt         DateTime  @default(now())
+
+  // Relations
+  sender       User               @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver     User               @relation("ReceivedMessages", fields: [receiverId], references: [id], onDelete: Cascade)
+  conversation Conversation       @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  reactions    MessageReaction[]
+
+  @@index([senderId])
+  @@index([receiverId])
+  @@index([conversationId])
+  @@index([isRead])
+  @@index([sentAt])
+  @@index([expiresAt])
+  @@index([isDeleted])
+  // Compound indexes for optimized queries
+  @@index([conversationId, sentAt])                    // Chat history: messages for a conversation ordered by time
+  @@index([conversationId, isDeleted, sentAt])         // Chat history excluding soft-deleted
+  @@index([receiverId, isRead])                        // Unread count per user
+  @@index([conversationId, receiverId, isRead])        // Unread count per conversation
+  @@index([expiresAt, isDeleted])                      // Expiry cron job: find expired, non-deleted
+  @@map("messages")
+}
+
+// ============================================
+// Message Reaction Model
+// ============================================
+model MessageReaction {
+  id        String   @id @default(uuid())
+  messageId String
+  userId    String
+  emoji     String   // One of: ❤️ 😂 👏 😮 😢 🔥
+  createdAt DateTime @default(now())
+
+  // Relations
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId]) // One reaction per user per message
+  @@index([messageId])
+  @@map("message_reactions")
+}
+
+// ============================================
+// Like Model
+// ============================================
+model Like {
+  id          String   @id @default(uuid())
+  likerId     String
+  likedUserId String
+  createdAt   DateTime @default(now())
+
+  // Relations
+  liker     User @relation("LikesGiven", fields: [likerId], references: [id], onDelete: Cascade)
+  likedUser User @relation("LikesReceived", fields: [likedUserId], references: [id], onDelete: Cascade)
+
+  @@unique([likerId, likedUserId])
+  @@index([likerId])
+  @@index([likedUserId])
+  @@index([createdAt])
+  @@map("likes")
+}
+
+// ============================================
+// Pass Model
+// ============================================
+model Pass {
+  id           String   @id @default(uuid())
+  passerId     String
+  passedUserId String
+  createdAt    DateTime @default(now())
+
+  // Relations
+  passer     User @relation("PassesGiven", fields: [passerId], references: [id], onDelete: Cascade)
+  passedUser User @relation("PassesReceived", fields: [passedUserId], references: [id], onDelete: Cascade)
+
+  @@unique([passerId, passedUserId])
+  @@index([passerId])
+  @@index([passedUserId])
+  @@index([createdAt])
+  @@map("passes")
+}
+
+// ============================================
+// Block Model
+// ============================================
+model Block {
+  id            String   @id @default(uuid())
+  blockerId     String
+  blockedUserId String
+  createdAt     DateTime @default(now())
+
+  // Relations
+  blocker     User @relation("BlocksGiven", fields: [blockerId], references: [id], onDelete: Cascade)
+  blockedUser User @relation("BlocksReceived", fields: [blockedUserId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedUserId])
+  @@index([blockerId])
+  @@index([blockedUserId])
+  @@index([createdAt])
+  @@map("blocks")
+}
+
+// ============================================
+// ProfileView Model
+// ============================================
+model ProfileView {
+  id         String   @id @default(uuid())
+  viewerId   String
+  viewedUserId String
+  viewedAt   DateTime @default(now())
+
+  // Relations
+  viewer     User @relation("ProfileViewsGiven", fields: [viewerId], references: [id], onDelete: Cascade)
+  viewedUser User @relation("ProfileViewsReceived", fields: [viewedUserId], references: [id], onDelete: Cascade)
+
+  @@index([viewerId])
+  @@index([viewedUserId])
+  @@index([viewedAt])
+  @@map("profile_views")
+}
+
+// ============================================
+// Report Model
+// ============================================
+model Report {
+  id              String   @id @default(uuid())
+  reporterId      String
+  reportedUserId  String
+  reason          String   // 'inappropriate_content', 'fake_profile', 'harassment', 'spam', 'other'
+  description     String?  @db.Text
+  status          String   @default("pending") // 'pending', 'reviewed', 'action_taken', 'dismissed'
+  reviewedBy      String?  // Admin user ID
+  reviewedAt      DateTime?
+  actionTaken     String?  // 'warning', 'suspension', 'ban', 'none'
+  createdAt       DateTime @default(now())
+
+  // Relations
+  reporter       User @relation("ReportsSubmitted", fields: [reporterId], references: [id], onDelete: Cascade)
+  reportedUser   User @relation("ReportsReceived", fields: [reportedUserId], references: [id], onDelete: Cascade)
+
+  @@index([reporterId])
+  @@index([reportedUserId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("reports")
+}
+
+// ============================================
+// VibeTag Category Enum
+// ============================================
+enum VibeTagCategory {
+  LIFESTYLE
+  PERSONALITY
+  INTERESTS
+  VALUES
+}
+
+// ============================================
+// VibeTag Model (M2M with User)
+// ============================================
+model VibeTag {
+  id       String          @id @default(uuid())
+  label    String          @unique
+  emoji    String
+  category VibeTagCategory
+  isActive Boolean         @default(true)
+
+  // M2M: users who selected this tag
+  users User[]
+
+  @@index([category])
+  @@index([isActive])
+  @@map("vibe_tags")
+}
+
+// ============================================
+// SOS Event Model
+// ============================================
+model SosEvent {
+  id        String   @id @default(uuid())
+  userId    String
+  latitude  Float?
+  longitude Float?
+  notifiedContact String?  // Phone number that was notified
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("sos_events")
+}
