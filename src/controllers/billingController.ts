@@ -5,9 +5,19 @@ import prisma from '../utils/prisma'
 import { logInfo, logError } from '../utils/logger'
 import { deleteCache } from '../services/cacheService'
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
-  apiVersion: '2025-03-31.basil' as any,
-})
+// Only initialize Stripe when the secret key is configured
+const stripe: Stripe | null = process.env.STRIPE_SECRET_KEY
+  ? new Stripe(process.env.STRIPE_SECRET_KEY, {
+      apiVersion: '2025-03-31.basil' as any,
+    })
+  : null
+
+if (!stripe) {
+  console.warn('⚠️  STRIPE_SECRET_KEY not set — billing endpoints will return 503')
+}
+
+/** Check whether Stripe is configured and available */
+export const isStripeAvailable = (): boolean => stripe !== null
 
 // Stripe Price IDs (set in .env or hardcode for development)
 const PRICE_IDS: Record<string, string> = {
@@ -31,6 +41,11 @@ export const createCheckoutSession = async (
   res: Response
 ): Promise<void> => {
   try {
+    if (!stripe) {
+      res.status(503).json({ error: 'Billing not configured' })
+      return
+    }
+
     if (!req.userId) {
       res.status(401).json({ message: 'Not authenticated' })
       return
@@ -102,6 +117,11 @@ export const handleWebhook = async (
   req: Request,
   res: Response
 ): Promise<void> => {
+  if (!stripe) {
+    res.status(503).json({ error: 'Billing not configured' })
+    return
+  }
+
   const sig = req.headers['stripe-signature'] as string
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET || ''
 
