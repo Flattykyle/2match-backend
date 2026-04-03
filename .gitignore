@@ -1,4 +1,3 @@
-@"
 # Dependencies
 node_modules/
 .pnp
@@ -26,17 +25,13 @@ npm-debug.log*
 yarn-debug.log*
 logs/
 
-# Database files (local only)
-*.db
-*.db-journal
-*.sql
+# Database dumps & backups (NOT Prisma migrations — those must be tracked)
+*.dump
 *.sql.gz
-backups/
+backups/*.sql
 
-# Prisma (keep schema, ignore local migrations)
-# Note: Keep migrations/ if you want to track them in git
-# Remove this line if you want migrations in git:
-# prisma/migrations/
+# Prisma (keep schema AND migrations tracked in git)
+# prisma/migrations/ must be committed for production deploys
 
 # OS files
 .DS_Store
@@ -63,4 +58,3 @@ credentials/
 
 # Testing
 coverage/
-"@ | Out-File -FilePath .gitignore -Encoding utf8 -Force
