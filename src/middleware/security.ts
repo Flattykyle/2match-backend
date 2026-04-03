@@ -164,20 +164,35 @@ export const cookieConfig = {
 }
 
 /**
- * CORS configuration for production
+ * Hardcoded allowed origins — always permitted regardless of CORS_ORIGIN env var.
+ * Add your production frontend URL(s) here so CORS works even if the env var is missing.
+ */
+const HARDCODED_ORIGINS = [
+  'https://2match-frontend.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3000',
+]
+
+/**
+ * Build the full list once at startup: hardcoded + anything extra from CORS_ORIGIN env var.
+ */
+export const allowedOrigins: string[] = [
+  ...HARDCODED_ORIGINS,
+  ...(process.env.CORS_ORIGIN?.split(',').map((o) => o.trim()).filter(Boolean) || []),
+]
+
+/**
+ * CORS configuration for Express
  */
 export const corsConfig = {
   origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-    const allowedOrigins = process.env.CORS_ORIGIN?.split(',') || ['http://localhost:5173']
-
-    // Allow requests with no origin (mobile apps, Postman, etc.)
+    // Allow requests with no origin (mobile apps, Postman, server-to-server)
     if (!origin) {
       return callback(null, true)
     }
 
-    // In development, allow any origin from local network
+    // In development, also allow local network IPs
     if (process.env.NODE_ENV !== 'production') {
-      // Allow localhost and local network IPs (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
       if (
         origin.includes('localhost') ||
         origin.match(/^https?:\/\/(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/i)

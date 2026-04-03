@@ -85,6 +85,7 @@ app.use(compression({
 app.use(helmetConfig)
 app.use(securityHeaders)
 app.use(cors(corsConfig))
+app.options('*', cors(corsConfig))   // handle preflight requests explicitly
 app.use(mongoSanitizeMiddleware)
 app.use(hppProtection)
 app.use(xssProtection)

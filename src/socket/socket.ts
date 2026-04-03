@@ -4,6 +4,7 @@ import cookie from 'cookie'
 import { verifyToken } from '../utils/jwt'
 import prisma from '../utils/prisma'
 import { logWarn } from '../utils/logger'
+import { allowedOrigins } from '../middleware/security'
 
 let ioInstance: Server | null = null
 export const getSocketIO = (): Server | null => ioInstance
@@ -14,7 +15,7 @@ const typingUsers = new Map<string, Set<string>>()
 export const setupSocket = (httpServer: HttpServer) => {
   const io = new Server(httpServer, {
     cors: {
-      origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+      origin: allowedOrigins,
       methods: ['GET', 'POST'],
       credentials: true,
     },
