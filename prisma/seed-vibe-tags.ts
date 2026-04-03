@@ -3,53 +3,51 @@ import { PrismaClient, VibeTagCategory } from '@prisma/client'
 const prisma = new PrismaClient()
 
 const tags: { label: string; emoji: string; category: VibeTagCategory }[] = [
-  // ── LIFESTYLE (8) ──
-  { label: 'Foodie', emoji: '🍕', category: 'LIFESTYLE' },
-  { label: 'Night owl', emoji: '🦉', category: 'LIFESTYLE' },
-  { label: 'Early bird', emoji: '🌅', category: 'LIFESTYLE' },
-  { label: 'Homebody', emoji: '🏠', category: 'LIFESTYLE' },
-  { label: 'Traveller', emoji: '✈️', category: 'LIFESTYLE' },
-  { label: 'Gym rat', emoji: '💪', category: 'LIFESTYLE' },
-  { label: 'Vegan', emoji: '🌱', category: 'LIFESTYLE' },
-  { label: 'Coffee lover', emoji: '☕', category: 'LIFESTYLE' },
+  // ── PERSONALITY (5) ──
+  { label: 'Overthinks in a cute way', emoji: '🧠', category: 'PERSONALITY' },
+  { label: 'Main character energy', emoji: '🎬', category: 'PERSONALITY' },
+  { label: 'Background character actually', emoji: '🫥', category: 'PERSONALITY' },
+  { label: 'Cries at commercials', emoji: '🥹', category: 'PERSONALITY' },
+  { label: 'Has a theory about everything', emoji: '🔍', category: 'PERSONALITY' },
 
-  // ── PERSONALITY (8) ──
-  { label: 'Introvert', emoji: '🤫', category: 'PERSONALITY' },
-  { label: 'Extrovert', emoji: '🎉', category: 'PERSONALITY' },
-  { label: 'Empath', emoji: '💗', category: 'PERSONALITY' },
-  { label: 'Overthinker', emoji: '🧠', category: 'PERSONALITY' },
-  { label: 'Spontaneous', emoji: '⚡', category: 'PERSONALITY' },
-  { label: 'Planner', emoji: '📋', category: 'PERSONALITY' },
-  { label: 'Funny', emoji: '😂', category: 'PERSONALITY' },
-  { label: 'Deep thinker', emoji: '🤔', category: 'PERSONALITY' },
+  // ── LIFESTYLE (5) ──
+  { label: 'Morning person apologist', emoji: '🌅', category: 'LIFESTYLE' },
+  { label: 'Gym is my therapy', emoji: '🏋️', category: 'LIFESTYLE' },
+  { label: 'Plants over people tbh', emoji: '🪴', category: 'LIFESTYLE' },
+  { label: 'Homebody with wanderlust', emoji: '🗺️', category: 'LIFESTYLE' },
+  { label: 'Perpetually running 5 mins late', emoji: '⏰', category: 'LIFESTYLE' },
 
-  // ── INTERESTS (12) ──
-  { label: 'Bookworm', emoji: '📚', category: 'INTERESTS' },
-  { label: 'Gamer', emoji: '🎮', category: 'INTERESTS' },
-  { label: 'Musician', emoji: '🎵', category: 'INTERESTS' },
-  { label: 'Artist', emoji: '🎨', category: 'INTERESTS' },
-  { label: 'Coder', emoji: '💻', category: 'INTERESTS' },
-  { label: 'Entrepreneur', emoji: '🚀', category: 'INTERESTS' },
-  { label: 'Chef', emoji: '👨‍🍳', category: 'INTERESTS' },
-  { label: 'Hiker', emoji: '🥾', category: 'INTERESTS' },
-  { label: 'Dog lover', emoji: '🐕', category: 'INTERESTS' },
-  { label: 'Cat lover', emoji: '🐱', category: 'INTERESTS' },
-  { label: 'Dancer', emoji: '💃', category: 'INTERESTS' },
-  { label: 'Photographer', emoji: '📸', category: 'INTERESTS' },
+  // ── DATING_STYLE (5) ──
+  { label: "Let's get coffee first", emoji: '☕', category: 'DATING_STYLE' },
+  { label: 'Slow texter, deep feeler', emoji: '💭', category: 'DATING_STYLE' },
+  { label: 'Sends memes instead of feelings', emoji: '📱', category: 'DATING_STYLE' },
+  { label: 'Words of affirmation person', emoji: '💌', category: 'DATING_STYLE' },
+  { label: 'Love language is quality time', emoji: '🕰️', category: 'DATING_STYLE' },
 
-  // ── VALUES (6) ──
-  { label: 'Family first', emoji: '👨‍👩‍👧‍👦', category: 'VALUES' },
-  { label: 'Ambitious', emoji: '🎯', category: 'VALUES' },
-  { label: 'Spiritual', emoji: '🧘', category: 'VALUES' },
-  { label: 'Adventure seeker', emoji: '🏔️', category: 'VALUES' },
-  { label: 'Growth mindset', emoji: '🌱', category: 'VALUES' },
-  { label: 'Honest above all', emoji: '💎', category: 'VALUES' },
+  // ── HUMOUR (5) ──
+  { label: 'Dry humour or nothing', emoji: '🍸', category: 'HUMOUR' },
+  { label: 'Comedian in group chats', emoji: '💬', category: 'HUMOUR' },
+  { label: 'Sarcastic but means well', emoji: '😏', category: 'HUMOUR' },
+  { label: 'Dad joke enthusiast', emoji: '👴', category: 'HUMOUR' },
+  { label: 'Too online', emoji: '📡', category: 'HUMOUR' },
+
+  // ── VALUES (5) ──
+  { label: 'Family first always', emoji: '👨‍👩‍👧‍👦', category: 'VALUES' },
+  { label: 'Climate anxiety haver', emoji: '🌍', category: 'VALUES' },
+  { label: "Will vote and won't shut up about it", emoji: '🗳️', category: 'VALUES' },
+  { label: 'Financial literacy nerd', emoji: '📊', category: 'VALUES' },
+  { label: 'Big on consent culture', emoji: '🤝', category: 'VALUES' },
+
+  // ── INTERESTS (5 bonus to fill category) ──
+  { label: 'Podcast binge listener', emoji: '🎧', category: 'INTERESTS' },
+  { label: 'Museum date enjoyer', emoji: '🎨', category: 'INTERESTS' },
+  { label: 'Hiking > clubbing', emoji: '🥾', category: 'INTERESTS' },
+  { label: 'Bookworm energy', emoji: '📚', category: 'INTERESTS' },
+  { label: 'Foodie without the blog', emoji: '🍜', category: 'INTERESTS' },
 ]
 
-// Note: "Foodie" in INTERESTS replaced with "Chef" to avoid duplicate label constraint
-
 async function main() {
-  console.log('Seeding 34 vibe tags...')
+  console.log('Seeding 30 vibe tags across 6 categories...')
 
   for (const tag of tags) {
     await prisma.vibeTag.upsert({

@@ -39,6 +39,7 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
             lastActive: true,
           },
         },
+        // Note: We don't exclude archived conversations — frontend shows placeholder
         messages: {
           orderBy: { sentAt: 'desc' },
           take: 1,
@@ -74,6 +75,7 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
           otherUser,
           lastMessage,
           unreadCount,
+          archived: conv.archived,
           lastMessageAt: conv.lastMessageAt,
           createdAt: conv.createdAt,
         }
@@ -236,6 +238,24 @@ export const sendMessage = async (req: AuthRequest, res: Response) => {
     }
 
     const receiverId = conversation.user1Id === userId ? conversation.user2Id : conversation.user1Id
+
+    // Slow Burn gate: check if chat is locked
+    const match = await prisma.match.findFirst({
+      where: {
+        OR: [
+          { userId1: userId, userId2: receiverId },
+          { userId1: receiverId, userId2: userId },
+        ],
+      },
+    })
+
+    if (match?.slowBurnEnabled && !match.chatUnlocked) {
+      return res.status(403).json({
+        error: 'Chat locked',
+        exchangeCount: match.exchangeCount,
+        required: 3,
+      })
+    }
 
     // Create message with 7 day expiry
     const expiresAt = new Date()

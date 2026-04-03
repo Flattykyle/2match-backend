@@ -3,6 +3,7 @@ import { AuthRequest } from '../types'
 import prisma from '../utils/prisma'
 import { getCache, setCache } from '../services/cacheService'
 
+const MIN_VIBE_TAGS = 3
 const MAX_VIBE_TAGS = 5
 const VIBE_TAGS_CACHE_KEY = 'vibe-tags:all'
 const VIBE_TAGS_CACHE_TTL = 3600 // 1 hour — tags rarely change
@@ -71,41 +72,41 @@ export const updateUserVibeTags = async (
       return
     }
 
-    if (tagIds.length > MAX_VIBE_TAGS) {
-      res.status(400).json({ message: `Maximum of ${MAX_VIBE_TAGS} vibe tags allowed` })
+    if (tagIds.length < MIN_VIBE_TAGS || tagIds.length > MAX_VIBE_TAGS) {
+      res.status(400).json({ message: `Select between ${MIN_VIBE_TAGS} and ${MAX_VIBE_TAGS} vibe tags` })
       return
     }
 
     // Validate all tag IDs exist and are active
-    if (tagIds.length > 0) {
-      const validTags = await prisma.vibeTag.findMany({
-        where: { id: { in: tagIds }, isActive: true },
-        select: { id: true },
-      })
+    const validTags = await prisma.vibeTag.findMany({
+      where: { id: { in: tagIds }, isActive: true },
+      select: { id: true },
+    })
 
-      if (validTags.length !== tagIds.length) {
-        res.status(400).json({ message: 'One or more invalid tag IDs' })
-        return
-      }
+    if (validTags.length !== tagIds.length) {
+      res.status(400).json({ message: 'One or more invalid tag IDs' })
+      return
     }
 
-    // Update user's vibe tags (replace all with new selection)
-    const updatedUser = await prisma.user.update({
-      where: { id: req.userId },
-      data: {
-        vibeTags: {
-          set: tagIds.map((id: string) => ({ id })),
-        },
-      },
-      select: {
-        id: true,
-        vibeTags: true,
-      },
+    // Replace user's vibe tags via explicit join table
+    await prisma.$transaction([
+      // Delete all existing
+      prisma.userVibeTag.deleteMany({ where: { userId: req.userId } }),
+      // Insert new ones
+      prisma.userVibeTag.createMany({
+        data: tagIds.map((vibeTagId: string) => ({ userId: req.userId!, vibeTagId })),
+      }),
+    ])
+
+    // Fetch updated tags
+    const updated = await prisma.userVibeTag.findMany({
+      where: { userId: req.userId },
+      include: { vibeTag: true },
     })
 
     res.json({
       message: 'Vibe tags updated',
-      vibeTags: updatedUser.vibeTags,
+      vibeTags: updated.map((uvt) => uvt.vibeTag),
     })
   } catch (error) {
     console.error('Update vibe tags error:', error)
@@ -127,17 +128,12 @@ export const getUserVibeTags = async (
       return
     }
 
-    const user = await prisma.user.findUnique({
-      where: { id: req.userId },
-      select: { vibeTags: true },
+    const userVibeTags = await prisma.userVibeTag.findMany({
+      where: { userId: req.userId },
+      include: { vibeTag: true },
     })
 
-    if (!user) {
-      res.status(404).json({ message: 'User not found' })
-      return
-    }
-
-    res.json({ vibeTags: user.vibeTags })
+    res.json({ vibeTags: userVibeTags.map((uvt) => uvt.vibeTag) })
   } catch (error) {
     console.error('Get user vibe tags error:', error)
     res.status(500).json({ message: 'Error fetching vibe tags' })

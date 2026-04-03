@@ -78,6 +78,114 @@ export const getUserById = async (req: AuthRequest, res: Response) => {
   }
 }
 
+/**
+ * PATCH /api/users/complete-profile
+ * Called once after registration — saves the full onboarding wizard payload.
+ */
+export const completeProfile = async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.userId) {
+      return res.status(401).json({ message: 'Not authenticated' })
+    }
+
+    const {
+      // Step 1 — basics
+      firstName,
+      lastName,
+      gender,
+      pronouns,
+      locationCity,
+      locationCountry,
+      latitude,
+      longitude,
+      // Step 4 — prompts
+      profilePrompts,
+      // Step 5 — flags
+      greenFlag,
+      redFlag,
+      currentlyObsessedWith,
+      // Step 7 — intention
+      intention,
+      // Step 8 — slow burn
+      slowModeEnabled,
+      // Vibe tag IDs (step 6)
+      vibeTagIds,
+    } = req.body
+
+    // Build user update data
+    const updateData: Record<string, any> = {}
+
+    if (firstName !== undefined) updateData.firstName = firstName
+    if (lastName !== undefined) updateData.lastName = lastName
+    if (gender !== undefined) updateData.gender = gender
+    if (pronouns !== undefined) updateData.pronouns = pronouns
+    if (locationCity !== undefined) updateData.locationCity = locationCity
+    if (locationCountry !== undefined) updateData.locationCountry = locationCountry
+    if (latitude !== undefined) updateData.latitude = latitude
+    if (longitude !== undefined) updateData.longitude = longitude
+    if (profilePrompts !== undefined) updateData.profilePrompts = profilePrompts
+    if (greenFlag !== undefined) updateData.greenFlag = greenFlag
+    if (redFlag !== undefined) updateData.redFlag = redFlag
+    if (currentlyObsessedWith !== undefined) updateData.currentlyObsessedWith = currentlyObsessedWith
+    if (intention !== undefined) updateData.intention = intention
+    if (slowModeEnabled !== undefined) {
+      updateData.slowModeEnabled = slowModeEnabled
+      if (slowModeEnabled) updateData.slowModeLimit = 3
+    }
+
+    // Update vibe tags (M2M)
+    if (Array.isArray(vibeTagIds)) {
+      updateData.userVibeTags = {
+        deleteMany: {},
+        create: vibeTagIds.map((id: string) => ({ vibeTagId: id })),
+      }
+    }
+
+    // Note: `pronouns` and `profilePrompts` fields require running
+    // `npx prisma migrate dev` after the schema change.
+    const updatedUser = await (prisma.user.update as any)({
+      where: { id: req.userId },
+      data: updateData,
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        firstName: true,
+        lastName: true,
+        dateOfBirth: true,
+        gender: true,
+        pronouns: true,
+        bio: true,
+        profilePrompts: true,
+        locationCity: true,
+        locationCountry: true,
+        latitude: true,
+        longitude: true,
+        profilePictures: true,
+        hobbies: true,
+        talents: true,
+        interests: true,
+        lookingFor: true,
+        intention: true,
+        greenFlag: true,
+        redFlag: true,
+        currentlyObsessedWith: true,
+        slowModeEnabled: true,
+        slowModeLimit: true,
+        voiceIntroUrl: true,
+        voiceIntroDuration: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    })
+
+    return res.json({ message: 'Profile completed', user: updatedUser })
+  } catch (error) {
+    console.error('Complete profile error:', error)
+    return res.status(500).json({ message: 'Error completing profile' })
+  }
+}
+
 export const updateProfile = async (req: AuthRequest, res: Response) => {
   try {
     if (!req.userId) {

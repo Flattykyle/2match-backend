@@ -18,6 +18,7 @@
     "db:migrate:prod": "bash scripts/migrate-production.sh"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.82.0",
     "@prisma/client": "^5.7.1",
     "@sentry/node": "^10.27.0",
     "@types/multer": "^2.0.0",

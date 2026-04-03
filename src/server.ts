@@ -14,9 +14,13 @@ import verificationRoutes from './routes/verificationRoutes'
 import reportRoutes from './routes/reportRoutes'
 import profileViewRoutes from './routes/profileViewRoutes'
 import icebreakerRoutes from './routes/icebreakerRoutes'
+import iceBreakerGameRoutes from './routes/iceBreakerGameRoutes'
 import vibeTagRoutes from './routes/vibeTagRoutes'
 import safetyRoutes from './routes/safetyRoutes'
 import billingRoutes from './routes/billingRoutes'
+import voiceMemoRoutes from './routes/voiceMemoRoutes'
+import spotifyRoutes from './routes/spotifyRoutes'
+import playlistRoutes from './routes/playlistRoutes'
 import { handleWebhook } from './controllers/billingController'
 import { errorHandler } from './middleware/errorHandler'
 import { setupSocket } from './socket/socket'
@@ -48,6 +52,7 @@ import {
 import { initializeRedis, closeRedis } from './config/redis'
 import { startMessageExpiryJob, stopMessageExpiryJob } from './jobs/messageExpiry'
 import { startBoostResetJob, stopBoostResetJob } from './jobs/boostReset'
+import { startDateCheckinJob, stopDateCheckinJob } from './jobs/dateCheckinReminder'
 
 dotenv.config()
 
@@ -142,9 +147,13 @@ app.use('/api/verification', verificationLimiter, verificationRoutes)
 app.use('/api/reports', reportLimiter, reportRoutes)
 app.use('/api/profile-views', profileViewLimiter, profileViewRoutes)
 app.use('/api/icebreakers', icebreakerRoutes)
+app.use('/api/icebreaker', iceBreakerGameRoutes)
 app.use('/api/vibe-tags', vibeTagRoutes)
 app.use('/api/safety', safetyRoutes)
 app.use('/api/billing', billingRoutes)
+app.use('/api/voice-memo', voiceMemoRoutes)
+app.use('/api/spotify', spotifyRoutes)
+app.use('/api/playlist', playlistRoutes)
 
 // Error handlers
 app.use(sentryErrorHandler())
@@ -180,6 +189,7 @@ httpServer.listen(PORT as number, '0.0.0.0', async () => {
   // Start background jobs
   startMessageExpiryJob()
   startBoostResetJob()
+  startDateCheckinJob()
 
   console.log('2-Match API is fully operational!')
 })
@@ -204,6 +214,7 @@ const shutdown = async (signal: string) => {
   // Stop background jobs
   stopMessageExpiryJob()
   stopBoostResetJob()
+  stopDateCheckinJob()
 
   // Close Redis
   try {

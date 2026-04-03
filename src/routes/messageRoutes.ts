@@ -12,8 +12,10 @@ import {
   acceptChatRequest,
   declineChatRequest,
 } from '../controllers/messageRequestController'
+import { sendVoiceMessage } from '../controllers/voiceMemoController'
 import { authenticate } from '../middleware/auth'
 import { checkActiveHours } from '../middleware/safety'
+import { uploadAudioSingle } from '../middleware/upload'
 
 const router = Router()
 
@@ -31,5 +33,8 @@ router.get('/conversations/:conversationId/messages', getMessages)
 router.post('/conversations/:conversationId/messages', checkActiveHours, sendMessage)
 router.put('/conversations/:conversationId/read', markAsRead)
 router.get('/unread-count', getUnreadCount)
+
+// Voice message route
+router.post('/:matchId/voice', uploadAudioSingle, sendVoiceMessage)
 
 export default router

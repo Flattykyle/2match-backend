@@ -62,15 +62,20 @@ export const getPotentialMatches = async (req: AuthRequest, res: Response) => {
       return res.status(200).json(cached)
     }
 
-    // Get current user
+    // Get current user with vibe tags
     const currentUser = await prisma.user.findUnique({
       where: { id: userId },
-      select: SAFE_USER_SELECT,
+      select: {
+        ...SAFE_USER_SELECT,
+        userVibeTags: { select: { vibeTag: { select: { id: true, label: true } } } },
+      },
     })
 
     if (!currentUser) {
       return res.status(404).json({ error: 'User not found' })
     }
+
+    const currentUserTagIds = new Set(currentUser.userVibeTags.map((uvt: any) => uvt.vibeTag.id))
 
     // Get excluded user IDs (likes, passes, blocks, matches)
     const [likes, passes, blocksGiven, blocksReceived, matches] = await Promise.all([
@@ -102,7 +107,7 @@ export const getPotentialMatches = async (req: AuthRequest, res: Response) => {
       },
       select: {
         ...SAFE_USER_SELECT,
-        vibeTags: { select: { id: true, label: true, emoji: true, category: true } },
+        userVibeTags: { select: { vibeTag: { select: { id: true, label: true, emoji: true, category: true } } } },
       },
     })
 
@@ -117,8 +122,8 @@ export const getPotentialMatches = async (req: AuthRequest, res: Response) => {
 
       // Vibe tag filter
       if (vibeTagFilter.length > 0) {
-        const candidateTags = (candidate.vibeTags || []).map((t) => t.label.toLowerCase())
-        const hasMatchingTag = vibeTagFilter.some((tag) => candidateTags.includes(tag))
+        const candidateTags = (candidate.userVibeTags || []).map((uvt: any) => uvt.vibeTag.label.toLowerCase())
+        const hasMatchingTag = vibeTagFilter.some((tag: string) => candidateTags.includes(tag))
         if (!hasMatchingTag) return false
       }
 
@@ -143,7 +148,7 @@ export const getPotentialMatches = async (req: AuthRequest, res: Response) => {
       return true
     })
 
-    // Map with compatibility, breakdown, distance
+    // Map with compatibility, breakdown, distance, sharedTagCount
     const enriched = filtered.map((candidate) => {
       const compatibility = calculateCompatibility(currentUser as any, candidate as any)
       const breakdown = getCompatibilityBreakdown(currentUser as any, candidate as any)
@@ -165,12 +170,23 @@ export const getPotentialMatches = async (req: AuthRequest, res: Response) => {
         distanceText = formatDistance(distance)
       }
 
+      // Count shared vibe tags
+      const candidateTagIds = ((candidate as any).userVibeTags || []).map((uvt: any) => uvt.vibeTag.id)
+      const sharedTagCount = candidateTagIds.filter((id: string) => currentUserTagIds.has(id)).length
+
+      // Flatten vibeTags for response
+      const vibeTags = ((candidate as any).userVibeTags || []).map((uvt: any) => uvt.vibeTag)
+
+      const { userVibeTags: _, ...rest } = candidate as any
+
       return {
-        ...candidate,
+        ...rest,
+        vibeTags,
         compatibility,
         compatibilityBreakdown: breakdown,
         distance,
         distanceText,
+        sharedTagCount,
       }
     })
 
@@ -553,7 +569,7 @@ export const searchUsers = async (req: AuthRequest, res: Response) => {
       where,
       select: {
         ...SAFE_USER_SELECT,
-        vibeTags: { select: { id: true, label: true, emoji: true, category: true } },
+        userVibeTags: { select: { vibeTag: { select: { id: true, label: true, emoji: true, category: true } } } },
       },
     })
 
@@ -589,8 +605,8 @@ export const searchUsers = async (req: AuthRequest, res: Response) => {
     const vibeTagFilter = vibeTagsParam ? vibeTagsParam.split(',').map((t) => t.trim().toLowerCase()) : []
     if (vibeTagFilter.length > 0) {
       filtered = filtered.filter((u) => {
-        const userTags = (u.vibeTags || []).map((t) => t.label.toLowerCase())
-        return vibeTagFilter.some((tag) => userTags.includes(tag))
+        const userTags = ((u as any).userVibeTags || []).map((uvt: any) => uvt.vibeTag.label.toLowerCase())
+        return vibeTagFilter.some((tag: string) => userTags.includes(tag))
       })
     }
 
@@ -649,6 +665,170 @@ export const unblockUser = async (req: AuthRequest, res: Response) => {
     return res.status(200).json({ message: 'User unblocked successfully' })
   } catch (error) {
     console.error('Unblock user error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Daily Picks — curated 8 profiles per user per day
+   Cached in Redis with TTL until midnight UTC.
+   ═══════════════════════════════════════════════════════════════ */
+
+const secondsUntilMidnightUTC = (): number => {
+  const now = new Date()
+  const midnight = new Date(now)
+  midnight.setUTCDate(midnight.getUTCDate() + 1)
+  midnight.setUTCHours(0, 0, 0, 0)
+  return Math.floor((midnight.getTime() - now.getTime()) / 1000)
+}
+
+export const getDailyPicks = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!
+    const cacheKey = `${CACHE_KEYS.DAILY_PICKS}${userId}`
+
+    // Return cached picks if they exist (same day)
+    const cached = await getCache<any>(cacheKey)
+    if (cached) {
+      return res.status(200).json(cached)
+    }
+
+    // Get current user
+    const currentUser = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        ...SAFE_USER_SELECT,
+        userVibeTags: { select: { vibeTag: { select: { id: true, label: true, emoji: true, category: true } } } },
+      },
+    })
+
+    if (!currentUser) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    const currentUserTagLabels = currentUser.userVibeTags.map((uvt) => uvt.vibeTag.label.toLowerCase())
+
+    // Get excluded user IDs
+    const [likes, passes, blocksGiven, blocksReceived, matches] = await Promise.all([
+      prisma.like.findMany({ where: { likerId: userId }, select: { likedUserId: true } }),
+      prisma.pass.findMany({ where: { passerId: userId }, select: { passedUserId: true } }),
+      prisma.block.findMany({ where: { blockerId: userId }, select: { blockedUserId: true } }),
+      prisma.block.findMany({ where: { blockedUserId: userId }, select: { blockerId: true } }),
+      prisma.match.findMany({
+        where: { OR: [{ userId1: userId }, { userId2: userId }] },
+        select: { userId1: true, userId2: true, exchangeCount: true },
+      }),
+    ])
+
+    const excludedIds = new Set<string>([userId])
+    likes.forEach((l) => excludedIds.add(l.likedUserId))
+    passes.forEach((p) => excludedIds.add(p.passedUserId))
+    blocksGiven.forEach((b) => excludedIds.add(b.blockedUserId))
+    blocksReceived.forEach((b) => excludedIds.add(b.blockerId))
+    matches.forEach((m) => {
+      excludedIds.add(m.userId1)
+      excludedIds.add(m.userId2)
+    })
+    excludedIds.delete(userId)
+
+    // Fetch candidates
+    const candidates = await prisma.user.findMany({
+      where: {
+        id: { notIn: Array.from(excludedIds) },
+      },
+      select: {
+        ...SAFE_USER_SELECT,
+        intention: true,
+        redFlag: true,
+        greenFlag: true,
+        currentlyObsessedWith: true,
+        userVibeTags: { select: { vibeTag: { select: { id: true, label: true, emoji: true, category: true } } } },
+      },
+    })
+
+    // Filter by mutual preferences
+    const filtered = candidates.filter((c) => {
+      if (!matchesPreferences(currentUser as any, c as any)) return false
+      if (!matchesPreferences(c as any, currentUser as any)) return false
+      return true
+    })
+
+    // Score candidates — compatibility + vibeTag overlap weight
+    const scored = filtered.map((c) => {
+      const compatibility = calculateCompatibility(currentUser as any, c as any)
+      const breakdown = getCompatibilityBreakdown(currentUser as any, c as any)
+
+      // Vibe tag overlap count
+      const candidateTagLabels = c.userVibeTags.map((uvt) => uvt.vibeTag.label.toLowerCase())
+      const vibeOverlap = currentUserTagLabels.filter((t) => candidateTagLabels.includes(t)).length
+
+      // Weighted score: compatibility + vibeTag bonus (up to 15 points)
+      const weightedScore = compatibility + Math.min(vibeOverlap * 5, 15)
+
+      let distance: number | null = null
+      let distanceText: string | null = null
+      if (currentUser.latitude && currentUser.longitude && c.latitude && c.longitude) {
+        distance = calculateDistance(currentUser.latitude, currentUser.longitude, c.latitude, c.longitude)
+        distanceText = formatDistance(distance)
+      }
+
+      // Build exchangeCount for any existing match (should be 0 for daily picks, but include for completeness)
+      const existingMatch = matches.find(
+        (m) => (m.userId1 === c.id || m.userId2 === c.id)
+      )
+
+      return {
+        ...c,
+        vibeTags: c.userVibeTags.map((uvt) => uvt.vibeTag),
+        userVibeTags: undefined,
+        compatibility,
+        compatibilityBreakdown: breakdown,
+        distance,
+        distanceText,
+        vibeOverlap,
+        weightedScore,
+        exchangeCount: existingMatch?.exchangeCount ?? 0,
+      }
+    })
+
+    // Sort by weighted score descending, then add slight randomisation
+    scored.sort((a, b) => b.weightedScore - a.weightedScore)
+
+    // Take top 24 candidates, then randomly select 8 (weighted toward top)
+    const pool = scored.slice(0, 24)
+    const picks: typeof pool = []
+    const used = new Set<number>()
+
+    while (picks.length < 8 && picks.length < pool.length) {
+      // Weighted random: earlier indices have higher probability
+      let idx: number
+      do {
+        // Bias toward front of array: use sqrt distribution
+        idx = Math.floor(Math.pow(Math.random(), 1.3) * pool.length)
+      } while (used.has(idx))
+      used.add(idx)
+      picks.push(pool[idx])
+    }
+
+    // Clean up internal scoring fields, keep sharedTagCount
+    const cleanPicks = picks.map(({ weightedScore, vibeOverlap, ...rest }) => ({
+      ...rest,
+      sharedTagCount: vibeOverlap,
+    }))
+
+    const result = {
+      picks: cleanPicks,
+      total: cleanPicks.length,
+      expiresAt: new Date(new Date().setUTCHours(24, 0, 0, 0)).toISOString(),
+    }
+
+    // Cache until midnight UTC
+    const ttl = secondsUntilMidnightUTC()
+    await setCache(cacheKey, result, ttl > 0 ? ttl : 86400)
+
+    return res.status(200).json(result)
+  } catch (error) {
+    console.error('Get daily picks error:', error)
     return res.status(500).json({ error: 'Internal server error' })
   }
 }

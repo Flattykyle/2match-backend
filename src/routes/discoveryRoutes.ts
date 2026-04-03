@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import {
   getPotentialMatches,
+  getDailyPicks,
   likeUser,
   passUser,
   blockUser,
@@ -19,6 +20,7 @@ const router = Router()
 router.use(authenticate)
 
 router.get('/potential-matches', getPotentialMatches)
+router.get('/daily-picks', getDailyPicks)
 router.get('/liked-users', getLikedUsers)
 router.get('/blocked-users', getBlockedUsers)
 router.get('/search', searchUsers)

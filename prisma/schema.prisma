@@ -15,10 +15,10 @@ datasource db {
 // User Model
 // ============================================
 model User {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  password  String
-  username  String   @unique
+  id       String @id @default(uuid())
+  email    String @unique
+  password String
+  username String @unique
 
   // Personal Information
   firstName   String
@@ -27,14 +27,16 @@ model User {
   gender      String
 
   // Profile Details
-  bio         String?  @db.Text
+  bio       String? @db.Text
+  pronouns  String?
+  profilePrompts Json?    // [{ question: string, answer: string }]
 
   locationCity    String?
   locationCountry String?
   latitude        Float?
   longitude       Float?
 
-  lookingFor      String
+  lookingFor String
 
   // Arrays
   profilePictures String[]
@@ -51,65 +53,88 @@ model User {
   resetPasswordExpiry DateTime?
 
   // Verification fields
-  emailVerified       Boolean  @default(false)
-  emailVerificationToken String?
-  emailVerificationExpiry DateTime?
-  phoneNumber         String?
-  phoneVerified       Boolean  @default(false)
-  phoneVerificationToken String?
-  photoVerified       Boolean  @default(false)
-  photoVerificationStatus String @default("pending")
+  emailVerified                Boolean   @default(false)
+  emailVerificationToken       String?
+  emailVerificationExpiry      DateTime?
+  phoneNumber                  String?
+  phoneVerified                Boolean   @default(false)
+  phoneVerificationToken       String?
+  photoVerified                Boolean   @default(false)
+  photoVerificationStatus      String    @default("pending")
   photoVerificationSubmittedAt DateTime?
 
   // Voice intro
-  voiceIntroUrl       String?
-  voiceIntroDuration  Int?
+  voiceIntroUrl      String?
+  voiceIntroDuration Int?
 
   // Subscription & Billing
-  subscriptionTier      String   @default("FREE")
+  subscriptionTier      String    @default("FREE")
   subscriptionExpiresAt DateTime?
-  stripeCustomerId      String?  @unique
+  isPremium             Boolean   @default(false)
+  premiumExpiresAt      DateTime?
+  stripeCustomerId      String?   @unique
   stripeSubscriptionId  String?
-  weeklyBoostsRemaining Int      @default(0)
-  lastBoostResetAt      DateTime @default(now())
+  weeklyBoostsRemaining Int       @default(0)
+  lastBoostResetAt      DateTime  @default(now())
   lastBoostedAt         DateTime?
 
   // Safety / Comfort Zone settings
-  slowModeEnabled       Boolean  @default(false)
-  slowModeLimit         Int      @default(5)
+  slowModeEnabled       Boolean @default(false)
+  slowModeLimit         Int     @default(5)
   activeHoursStart      Int?
   activeHoursEnd        Int?
-  photoShieldEnabled    Boolean  @default(false)
+  photoShieldEnabled    Boolean @default(false)
   emergencyContactName  String?
   emergencyContactPhone String?
 
   // Online status
-  isOnline            Boolean  @default(false)
+  isOnline    Boolean   @default(false)
+  snoozedUntil DateTime?
+  flagged      Boolean   @default(false)
+
+  // Profile extras (v2)
+  intention             Intention @default(EXPLORING)
+  photoBlurEnabled      Boolean   @default(true)
+  redFlag               String?
+  greenFlag             String?
+  currentlyObsessedWith String?
+  spotifyConnected      Boolean   @default(false)
+  spotifyAccessToken    String?
+  spotifyRefreshToken   String?
+  spotifyTokenExpiresAt DateTime?
+
+  // Voice memo (one-to-one)
+  voiceMemoId String?    @unique
+  voiceMemo   VoiceMemo? @relation(fields: [voiceMemoId], references: [id])
 
   // Timestamps
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  lastActive  DateTime @default(now())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  lastActive DateTime @default(now())
 
   // Relations
-  matchesAsUser1       Match[]        @relation("User1Matches")
-  matchesAsUser2       Match[]        @relation("User2Matches")
-  sentMessages         Message[]      @relation("SentMessages")
-  receivedMessages     Message[]      @relation("ReceivedMessages")
-  conversationsAsUser1 Conversation[] @relation("User1Conversations")
-  conversationsAsUser2 Conversation[] @relation("User2Conversations")
-  likesGiven           Like[]         @relation("LikesGiven")
-  likesReceived        Like[]         @relation("LikesReceived")
-  passesGiven          Pass[]         @relation("PassesGiven")
-  passesReceived       Pass[]         @relation("PassesReceived")
-  blocksGiven          Block[]        @relation("BlocksGiven")
-  blocksReceived       Block[]        @relation("BlocksReceived")
-  profileViewsGiven    ProfileView[]  @relation("ProfileViewsGiven")
-  profileViewsReceived ProfileView[]  @relation("ProfileViewsReceived")
-  reportsSubmitted     Report[]       @relation("ReportsSubmitted")
-  reportsReceived      Report[]       @relation("ReportsReceived")
+  matchesAsUser1       Match[]            @relation("User1Matches")
+  matchesAsUser2       Match[]            @relation("User2Matches")
+  sentMessages         Message[]          @relation("SentMessages")
+  receivedMessages     Message[]          @relation("ReceivedMessages")
+  conversationsAsUser1 Conversation[]     @relation("User1Conversations")
+  conversationsAsUser2 Conversation[]     @relation("User2Conversations")
+  likesGiven           Like[]             @relation("LikesGiven")
+  likesReceived        Like[]             @relation("LikesReceived")
+  passesGiven          Pass[]             @relation("PassesGiven")
+  passesReceived       Pass[]             @relation("PassesReceived")
+  blocksGiven          Block[]            @relation("BlocksGiven")
+  blocksReceived       Block[]            @relation("BlocksReceived")
+  profileViewsGiven    ProfileView[]      @relation("ProfileViewsGiven")
+  profileViewsReceived ProfileView[]      @relation("ProfileViewsReceived")
+  reportsSubmitted     Report[]           @relation("ReportsSubmitted")
+  reportsReceived      Report[]           @relation("ReportsReceived")
   icebreakerAnswers    IcebreakerAnswer[]
-  vibeTags             VibeTag[]
+  userVibeTags         UserVibeTag[]
+  promptExchanges      PromptExchange[]
+  dateCheckins         DateCheckin[]
+  moodCheckins         MoodCheckin[]
+  iceBreakerGamesStarted IceBreakerGame[] @relation("IceBreakerGameStarter")
 
   @@index([email])
   @@index([username])
@@ -127,17 +152,26 @@ model User {
 // Match Model
 // ============================================
 model Match {
-  id                  String   @id @default(uuid())
-  userId1             String
-  userId2             String
-  compatibilityScore  Int
-  status              String   @default("pending")
-  icebreakerUnlocked  Boolean  @default(false)
-  matchedAt           DateTime @default(now())
+  id                 String   @id @default(uuid())
+  userId1            String
+  userId2            String
+  compatibilityScore Int
+  status             String   @default("pending")
+  icebreakerUnlocked Boolean  @default(false)
+  slowBurnEnabled    Boolean  @default(false)
+  exchangeCount      Float    @default(0)
+  chatUnlocked       Boolean  @default(false)
+  playlistCreated         Boolean  @default(false)
+  aiStarterRegenerations  Int      @default(0)
+  matchedAt               DateTime @default(now())
 
-  user1 User @relation("User1Matches", fields: [userId1], references: [id], onDelete: Cascade)
-  user2 User @relation("User2Matches", fields: [userId2], references: [id], onDelete: Cascade)
+  user1             User               @relation("User1Matches", fields: [userId1], references: [id], onDelete: Cascade)
+  user2             User               @relation("User2Matches", fields: [userId2], references: [id], onDelete: Cascade)
   icebreakerAnswers IcebreakerAnswer[]
+  promptExchanges   PromptExchange[]
+  iceBreakerGame    IceBreakerGame?
+  sharedPlaylist    SharedPlaylist?
+  dateCheckins      DateCheckin[]
 
   @@unique([userId1, userId2])
   @@index([userId1])
@@ -195,12 +229,13 @@ model IcebreakerAnswer {
 // Conversation Model
 // ============================================
 model Conversation {
-  id              String   @id @default(uuid())
-  user1Id         String
-  user2Id         String
-  requestStatus   String   @default("accepted")
-  lastMessageAt   DateTime?
-  createdAt       DateTime @default(now())
+  id            String    @id @default(uuid())
+  user1Id       String
+  user2Id       String
+  requestStatus String    @default("accepted")
+  archived      Boolean   @default(false)
+  lastMessageAt DateTime?
+  createdAt     DateTime  @default(now())
 
   user1    User      @relation("User1Conversations", fields: [user1Id], references: [id], onDelete: Cascade)
   user2    User      @relation("User2Conversations", fields: [user2Id], references: [id], onDelete: Cascade)
@@ -223,15 +258,18 @@ model Message {
   receiverId     String
   conversationId String
   content        String    @db.Text
+  type           String    @default("TEXT")
+  audioUrl       String?
+  audioDuration  Int?
   isRead         Boolean   @default(false)
   readAt         DateTime?
   expiresAt      DateTime?
   isDeleted      Boolean   @default(false)
   sentAt         DateTime  @default(now())
 
-  sender       User               @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
-  receiver     User               @relation("ReceivedMessages", fields: [receiverId], references: [id], onDelete: Cascade)
-  conversation Conversation       @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User              @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver     User              @relation("ReceivedMessages", fields: [receiverId], references: [id], onDelete: Cascade)
+  conversation Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   reactions    MessageReaction[]
 
   @@index([senderId])
@@ -345,16 +383,16 @@ model ProfileView {
 // Report Model
 // ============================================
 model Report {
-  id              String   @id @default(uuid())
-  reporterId      String
-  reportedUserId  String
-  reason          String
-  description     String?  @db.Text
-  status          String   @default("pending")
-  reviewedBy      String?
-  reviewedAt      DateTime?
-  actionTaken     String?
-  createdAt       DateTime @default(now())
+  id             String    @id @default(uuid())
+  reporterId     String
+  reportedUserId String
+  reason         String
+  description    String?   @db.Text
+  status         String    @default("pending")
+  reviewedBy     String?
+  reviewedAt     DateTime?
+  actionTaken    String?
+  createdAt      DateTime  @default(now())
 
   reporter     User @relation("ReportsSubmitted", fields: [reporterId], references: [id], onDelete: Cascade)
   reportedUser User @relation("ReportsReceived", fields: [reportedUserId], references: [id], onDelete: Cascade)
@@ -374,19 +412,22 @@ enum VibeTagCategory {
   PERSONALITY
   INTERESTS
   VALUES
+  DATING_STYLE
+  HUMOUR
 }
 
 // ============================================
 // VibeTag Model (M2M with User)
 // ============================================
 model VibeTag {
-  id       String          @id @default(uuid())
-  label    String          @unique
-  emoji    String
-  category VibeTagCategory
-  isActive Boolean         @default(true)
+  id        String          @id @default(uuid())
+  label     String          @unique
+  emoji     String
+  category  VibeTagCategory
+  isActive  Boolean         @default(true)
+  createdAt DateTime        @default(now())
 
-  users User[]
+  userVibeTags UserVibeTag[]
 
   @@index([category])
   @@index([isActive])
@@ -407,4 +448,187 @@ model SosEvent {
   @@index([userId])
   @@index([createdAt])
   @@map("sos_events")
+}
+
+// ============================================
+// New Enums (v2 features)
+// ============================================
+enum Intention {
+  SERIOUS
+  CASUAL
+  FRIENDS_FIRST
+  OPEN
+  EXPLORING
+}
+
+enum IceBreakerGameType {
+  TWO_TRUTHS
+  HOT_TAKES
+  WOULD_YOU_RATHER
+}
+
+enum IceBreakerGameStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum DateCheckinStatus {
+  PENDING
+  SAFE
+  MISSED
+}
+
+enum Mood {
+  GREAT
+  GOOD
+  OKAY
+  BURNED_OUT
+  TAKING_BREAK
+}
+
+enum ReportReason {
+  INAPPROPRIATE_PHOTOS
+  HARASSMENT
+  FAKE_PROFILE
+  UNSAFE_BEHAVIOR
+  HATE_SPEECH
+  OTHER
+}
+
+// ============================================
+// UserVibeTag (explicit join table)
+// ============================================
+model UserVibeTag {
+  userId    String
+  vibeTagId String
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vibeTag VibeTag @relation(fields: [vibeTagId], references: [id], onDelete: Cascade)
+
+  @@id([userId, vibeTagId])
+  @@index([userId])
+  @@index([vibeTagId])
+  @@map("user_vibe_tags")
+}
+
+// ============================================
+// PromptExchange (Slow Burn mode)
+// ============================================
+model PromptExchange {
+  id        String   @id @default(uuid())
+  matchId   String
+  senderId  String
+  question  String
+  answer    String   @db.Text
+  createdAt DateTime @default(now())
+
+  match  Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  sender User  @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([matchId])
+  @@index([senderId])
+  @@index([createdAt])
+  @@map("prompt_exchanges")
+}
+
+// ============================================
+// IceBreakerGame Model
+// ============================================
+model IceBreakerGame {
+  id         String               @id @default(uuid())
+  matchId    String               @unique
+  gameType   IceBreakerGameType
+  status     IceBreakerGameStatus @default(PENDING)
+  startedBy  String
+  payloadA   Json?
+  payloadB   Json?
+  guessA     Json?
+  guessB     Json?
+  result     Json?
+  createdAt  DateTime             @default(now())
+  updatedAt  DateTime             @updatedAt
+
+  match   Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  starter User  @relation("IceBreakerGameStarter", fields: [startedBy], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@map("ice_breaker_games")
+}
+
+// ============================================
+// SharedPlaylist Model
+// ============================================
+model SharedPlaylist {
+  id                     String   @id @default(uuid())
+  matchId                String   @unique
+  spotifyPlaylistIdUser1 String?
+  spotifyPlaylistIdUser2 String?
+  tracks                 Json     @default("[]")
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@map("shared_playlists")
+}
+
+// ============================================
+// DateCheckin (safety check-in)
+// ============================================
+model DateCheckin {
+  id                  String            @id @default(uuid())
+  userId              String
+  matchId             String?
+  scheduledAt         DateTime
+  respondedAt         DateTime?
+  status              DateCheckinStatus @default(PENDING)
+  trustedContactEmail String?
+  reminderSentAt      DateTime?
+  createdAt           DateTime          @default(now())
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  match Match? @relation(fields: [matchId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([matchId])
+  @@index([status])
+  @@index([scheduledAt])
+  @@map("date_checkins")
+}
+
+// ============================================
+// MoodCheckin Model
+// ============================================
+model MoodCheckin {
+  id        String   @id @default(uuid())
+  userId    String
+  mood      Mood
+  note      String?  @db.Text
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([mood])
+  @@index([createdAt])
+  @@map("mood_checkins")
+}
+
+// ============================================
+// VoiceMemo Model
+// ============================================
+model VoiceMemo {
+  id                 String   @id @default(uuid())
+  userId             String   @unique
+  cloudinaryPublicId String
+  duration           Int
+  url                String
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  user User?
+
+  @@index([userId])
+  @@map("voice_memos")
 }

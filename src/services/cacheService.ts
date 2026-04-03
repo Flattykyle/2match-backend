@@ -20,6 +20,7 @@ export const CACHE_KEYS = {
   VERIFICATION_CODE: 'verification:code:',
   VIBE_TAGS: 'vibe-tags:all',
   SLOW_MODE_MATCHES: 'slowmode:matches:',
+  DAILY_PICKS: 'daily_picks:',
 } as const
 
 /**

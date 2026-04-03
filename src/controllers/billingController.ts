@@ -23,6 +23,8 @@ export const isStripeAvailable = (): boolean => stripe !== null
 const PRICE_IDS: Record<string, string> = {
   PREMIUM: process.env.STRIPE_PREMIUM_PRICE_ID || 'price_premium_placeholder',
   PLATINUM: process.env.STRIPE_PLATINUM_PRICE_ID || 'price_platinum_placeholder',
+  PREMIUM_MONTHLY: process.env.STRIPE_PREMIUM_MONTHLY_PRICE_ID || 'price_premium_monthly_placeholder',
+  PREMIUM_ANNUAL: process.env.STRIPE_PREMIUM_ANNUAL_PRICE_ID || 'price_premium_annual_placeholder',
 }
 
 const TIER_FROM_PRICE: Record<string, string> = {}
@@ -148,12 +150,16 @@ export const handleWebhook = async (
           const subscription = await stripe.subscriptions.retrieve(subscriptionId) as any
           const expiresAt = new Date((subscription.current_period_end || Math.floor(Date.now() / 1000) + 30 * 24 * 3600) * 1000)
 
+          const isPremiumTier = ['PREMIUM', 'PREMIUM_MONTHLY', 'PREMIUM_ANNUAL', 'PLATINUM'].includes(tier)
+
           await prisma.user.update({
             where: { id: userId },
             data: {
-              subscriptionTier: tier,
+              subscriptionTier: tier.startsWith('PREMIUM') ? 'PREMIUM' : tier,
               subscriptionExpiresAt: expiresAt,
               stripeSubscriptionId: subscriptionId,
+              isPremium: isPremiumTier,
+              premiumExpiresAt: isPremiumTier ? expiresAt : null,
               // Platinum gets 1 weekly boost
               ...(tier === 'PLATINUM' ? { weeklyBoostsRemaining: 1 } : {}),
             },
@@ -183,6 +189,8 @@ export const handleWebhook = async (
               subscriptionTier: 'FREE',
               subscriptionExpiresAt: null,
               stripeSubscriptionId: null,
+              isPremium: false,
+              premiumExpiresAt: null,
               weeklyBoostsRemaining: 0,
             },
           })
@@ -373,5 +381,126 @@ export const getWhoVibedYou = async (
   } catch (error) {
     console.error('Get who vibed you error:', error)
     res.status(500).json({ message: 'Error fetching who vibed you' })
+  }
+}
+
+// ----------------------------------------
+// CREATE PREMIUM CHECKOUT
+// POST /api/billing/create-checkout
+// Body: { plan: 'monthly' | 'annual' }
+// ----------------------------------------
+export const createPremiumCheckout = async (
+  req: AuthRequest,
+  res: Response
+): Promise<void> => {
+  try {
+    if (!stripe) {
+      res.status(503).json({ error: 'Billing not configured' })
+      return
+    }
+
+    if (!req.userId) {
+      res.status(401).json({ message: 'Not authenticated' })
+      return
+    }
+
+    const { plan } = req.body
+    const validPlans = ['monthly', 'annual']
+    if (!plan || !validPlans.includes(plan)) {
+      res.status(400).json({ message: 'plan must be "monthly" or "annual"' })
+      return
+    }
+
+    const priceId = plan === 'monthly'
+      ? PRICE_IDS.PREMIUM_MONTHLY
+      : PRICE_IDS.PREMIUM_ANNUAL
+
+    const tier = plan === 'monthly' ? 'PREMIUM_MONTHLY' : 'PREMIUM_ANNUAL'
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.userId },
+      select: { email: true, stripeCustomerId: true },
+    })
+
+    if (!user) {
+      res.status(404).json({ message: 'User not found' })
+      return
+    }
+
+    let customerId = user.stripeCustomerId
+    if (!customerId) {
+      const customer = await stripe.customers.create({
+        email: user.email,
+        metadata: { userId: req.userId },
+      })
+      customerId = customer.id
+      await prisma.user.update({
+        where: { id: req.userId },
+        data: { stripeCustomerId: customerId },
+      })
+    }
+
+    const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173'
+
+    const session = await stripe.checkout.sessions.create({
+      customer: customerId,
+      payment_method_types: ['card'],
+      mode: 'subscription',
+      line_items: [{ price: priceId, quantity: 1 }],
+      subscription_data: {
+        trial_period_days: 7,
+      },
+      success_url: `${clientUrl}/upgrade?success=true&tier=PREMIUM`,
+      cancel_url: `${clientUrl}/upgrade?canceled=true`,
+      metadata: { userId: req.userId, tier },
+    })
+
+    res.json({ url: session.url })
+  } catch (error) {
+    console.error('Create premium checkout error:', error)
+    res.status(500).json({ message: 'Error creating checkout session' })
+  }
+}
+
+// ----------------------------------------
+// GET CUSTOMER PORTAL
+// GET /api/billing/portal
+// ----------------------------------------
+export const getCustomerPortal = async (
+  req: AuthRequest,
+  res: Response
+): Promise<void> => {
+  try {
+    if (!stripe) {
+      res.status(503).json({ error: 'Billing not configured' })
+      return
+    }
+
+    if (!req.userId) {
+      res.status(401).json({ message: 'Not authenticated' })
+      return
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.userId },
+      select: { stripeCustomerId: true },
+    })
+
+    if (!user?.stripeCustomerId) {
+      res.status(400).json({ message: 'No Stripe customer found. Subscribe first.' })
+      return
+    }
+
+    const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173'
+
+    const session = await stripe.billingPortal.sessions.create({
+      customer: user.stripeCustomerId,
+      return_url: `${clientUrl}/settings`,
+    })
+
+    res.json({ url: session.url })
+  } catch (error) {
+    console.error('Get customer portal error:', error)
+    res.status(500).json({ message: 'Error creating portal session' })
   }
 }

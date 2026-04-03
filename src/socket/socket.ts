@@ -143,6 +143,25 @@ export const setupSocket = (httpServer: HttpServer) => {
       try {
         const { conversationId, receiverId, content } = data
 
+        // Slow Burn gate: check if chat is locked
+        const slowBurnMatch = await prisma.match.findFirst({
+          where: {
+            OR: [
+              { userId1: userId, userId2: receiverId },
+              { userId1: receiverId, userId2: userId },
+            ],
+          },
+        })
+
+        if (slowBurnMatch?.slowBurnEnabled && !slowBurnMatch.chatUnlocked) {
+          socket.emit('message_error', {
+            error: 'Chat locked',
+            exchangeCount: slowBurnMatch.exchangeCount,
+            required: 3,
+          })
+          return
+        }
+
         const now = new Date()
         const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
 
