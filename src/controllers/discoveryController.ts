@@ -5,7 +5,6 @@ import { calculateCompatibility, getCompatibilityBreakdown, matchesPreferences }
 import { calculateDistance, formatDistance } from '../utils/location'
 import { getCache, setCache, deleteCachePattern, CACHE_KEYS } from '../services/cacheService'
 
-// Select only the fields we need — avoids fetching password, tokens, etc.
 const SAFE_USER_SELECT = {
   id: true,
   email: true,
@@ -35,774 +34,631 @@ const SAFE_USER_SELECT = {
   photoVerified: true,
   createdAt: true,
   updatedAt: true,
-} as const
+}
 
 const DISCOVERY_CACHE_TTL = 300 // 5 minutes
 
-// ----------------------------------------
-// GET POTENTIAL MATCHES
-// BEFORE: 6 separate queries (likes, passes, blocks, blockedBy, matches, users) = N+1 pattern
-//         Offset pagination, no caching, fetches ALL user fields including password/tokens
-// AFTER:  Single query for excluded IDs, explicit select (no sensitive fields),
-//         cursor-based pagination, Redis cache (5min TTL)
-// ----------------------------------------
-export const getPotentialMatches = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
+export const getPotentialMatches = async (req: AuthRequest, res: Response) => {
   try {
-    if (!req.userId) {
-      res.status(401).json({ message: 'Not authenticated' })
-      return
-    }
-
+    const userId = req.userId!
     const {
-      limit = '20',
-      cursor,             // cursor-based: pass the last user's id
-      minCompatibility = '0',
+      limit: limitStr = '20',
+      cursor,
+      minCompatibility: minCompatStr,
       sortBy = 'compatibility',
-      maxDistance,
-      nearMeOnly = 'false',
-      vibeTags: vibeTagFilter,
-    } = req.query
+      maxDistance: maxDistStr,
+      nearMeOnly,
+      vibeTags: vibeTagsParam,
+    } = req.query as Record<string, string | undefined>
 
-    const limitNum = Math.min(parseInt(limit as string, 10), 50)
-    const minCompat = parseInt(minCompatibility as string, 10)
-    const sortByOption = sortBy as string
-    const isNearMeOnly = nearMeOnly === 'true'
-    const maxDistanceKm = maxDistance ? parseInt(maxDistance as string, 10) : null
-    const vibeTagIds = vibeTagFilter ? (vibeTagFilter as string).split(',').filter(Boolean) : []
-    const cursorId = cursor as string | undefined
+    const limit = parseInt(limitStr) || 20
+    const minCompatibility = minCompatStr ? parseInt(minCompatStr) : 0
+    const maxDistance = maxDistStr ? parseFloat(maxDistStr) : undefined
 
-    // ── Check Redis cache ──
-    const cacheKey = `${CACHE_KEYS.POTENTIAL_MATCHES}${req.userId}:${sortByOption}:${minCompat}:${maxDistanceKm || 'any'}:${vibeTagIds.join(',')}:${cursorId || 'start'}`
+    // Check cache
+    const cacheKey = `${CACHE_KEYS.POTENTIAL_MATCHES}${userId}:${JSON.stringify(req.query)}`
     const cached = await getCache<any>(cacheKey)
     if (cached) {
-      res.json(cached)
-      return
+      return res.status(200).json(cached)
     }
 
-    // ── Single query: get current user with safe fields ──
+    // Get current user
     const currentUser = await prisma.user.findUnique({
-      where: { id: req.userId },
-      select: { ...SAFE_USER_SELECT, preferences: true },
+      where: { id: userId },
+      select: SAFE_USER_SELECT,
     })
 
     if (!currentUser) {
-      res.status(404).json({ message: 'User not found' })
-      return
+      return res.status(404).json({ error: 'User not found' })
     }
 
-    // ── Single query: get ALL excluded user IDs in one shot ──
-    // BEFORE: 5 separate queries (likes, passes, blocks, blockedBy, matches)
-    // AFTER: parallel Promise.all with select-only queries
+    // Get excluded user IDs (likes, passes, blocks, matches)
     const [likes, passes, blocksGiven, blocksReceived, matches] = await Promise.all([
-      prisma.like.findMany({
-        where: { likerId: req.userId },
-        select: { likedUserId: true },
-      }),
-      prisma.pass.findMany({
-        where: { passerId: req.userId },
-        select: { passedUserId: true },
-      }),
-      prisma.block.findMany({
-        where: { blockerId: req.userId },
-        select: { blockedUserId: true },
-      }),
-      prisma.block.findMany({
-        where: { blockedUserId: req.userId },
-        select: { blockerId: true },
-      }),
+      prisma.like.findMany({ where: { likerId: userId }, select: { likedUserId: true } }),
+      prisma.pass.findMany({ where: { passerId: userId }, select: { passedUserId: true } }),
+      prisma.block.findMany({ where: { blockerId: userId }, select: { blockedUserId: true } }),
+      prisma.block.findMany({ where: { blockedUserId: userId }, select: { blockerId: true } }),
       prisma.match.findMany({
-        where: {
-          OR: [{ userId1: req.userId }, { userId2: req.userId }],
-        },
+        where: { OR: [{ userId1: userId }, { userId2: userId }] },
         select: { userId1: true, userId2: true },
       }),
     ])
 
-    const excludedUserIds = new Set([
-      ...likes.map((l) => l.likedUserId),
-      ...passes.map((p) => p.passedUserId),
-      ...blocksGiven.map((b) => b.blockedUserId),
-      ...blocksReceived.map((b) => b.blockerId),
-      ...matches.map((m) => (m.userId1 === req.userId ? m.userId2 : m.userId1)),
-      req.userId,
-    ])
+    const excludedIds = new Set<string>([userId])
+    likes.forEach((l) => excludedIds.add(l.likedUserId))
+    passes.forEach((p) => excludedIds.add(p.passedUserId))
+    blocksGiven.forEach((b) => excludedIds.add(b.blockedUserId))
+    blocksReceived.forEach((b) => excludedIds.add(b.blockerId))
+    matches.forEach((m) => {
+      excludedIds.add(m.userId1)
+      excludedIds.add(m.userId2)
+    })
+    excludedIds.delete(userId) // remove self if added via matches
 
-    // ── Single query: fetch candidate users with nested vibeTags select ──
-    // BEFORE: include: { vibeTags: true } — fetches all vibeTag fields + join table
-    // AFTER: select with nested select — only the fields we need, no N+1
-    const allUsers = await prisma.user.findMany({
+    // Fetch candidate users
+    const candidates = await prisma.user.findMany({
       where: {
-        id: { notIn: Array.from(excludedUserIds) },
+        id: { notIn: Array.from(excludedIds) },
       },
       select: {
         ...SAFE_USER_SELECT,
-        vibeTags: {
-          select: { id: true, label: true, emoji: true, category: true },
-        },
+        vibeTags: { select: { id: true, label: true, emoji: true, category: true } },
       },
     })
 
-    // ── In-memory filter + score (unchanged logic, cleaner types) ──
-    const scored = allUsers
-      .filter((user) => {
-        if (!matchesPreferences(currentUser as any, user as any)) return false
-        if (!matchesPreferences(user as any, currentUser as any)) return false
+    // Parse vibe tag filter
+    const vibeTagFilter = vibeTagsParam ? vibeTagsParam.split(',').map((t) => t.trim().toLowerCase()) : []
 
-        if (vibeTagIds.length > 0) {
-          const tagIds = user.vibeTags.map((t) => t.id)
-          if (!vibeTagIds.every((id) => tagIds.includes(id))) return false
-        }
+    // In-memory filtering
+    const filtered = candidates.filter((candidate) => {
+      // Check mutual preference matching
+      if (!matchesPreferences(currentUser as any, candidate as any)) return false
+      if (!matchesPreferences(candidate as any, currentUser as any)) return false
 
-        if (maxDistanceKm && currentUser.latitude && currentUser.longitude) {
-          if (!user.latitude || !user.longitude) return false
-          if (calculateDistance(currentUser.latitude, currentUser.longitude, user.latitude, user.longitude) > maxDistanceKm) return false
-        }
+      // Vibe tag filter
+      if (vibeTagFilter.length > 0) {
+        const candidateTags = (candidate.vibeTags || []).map((t) => t.label.toLowerCase())
+        const hasMatchingTag = vibeTagFilter.some((tag) => candidateTags.includes(tag))
+        if (!hasMatchingTag) return false
+      }
 
-        if (isNearMeOnly && currentUser.latitude && currentUser.longitude) {
-          if (!user.latitude || !user.longitude) return false
-        }
+      // Distance filter
+      if (
+        (maxDistance || nearMeOnly === 'true') &&
+        currentUser.latitude &&
+        currentUser.longitude &&
+        candidate.latitude &&
+        candidate.longitude
+      ) {
+        const dist = calculateDistance(
+          currentUser.latitude,
+          currentUser.longitude,
+          candidate.latitude,
+          candidate.longitude
+        )
+        const maxDist = maxDistance || 50 // default 50km for nearMeOnly
+        if (dist > maxDist) return false
+      }
 
-        return true
+      return true
+    })
+
+    // Map with compatibility, breakdown, distance
+    const enriched = filtered.map((candidate) => {
+      const compatibility = calculateCompatibility(currentUser as any, candidate as any)
+      const breakdown = getCompatibilityBreakdown(currentUser as any, candidate as any)
+
+      let distance: number | null = null
+      let distanceText: string | null = null
+      if (
+        currentUser.latitude &&
+        currentUser.longitude &&
+        candidate.latitude &&
+        candidate.longitude
+      ) {
+        distance = calculateDistance(
+          currentUser.latitude,
+          currentUser.longitude,
+          candidate.latitude,
+          candidate.longitude
+        )
+        distanceText = formatDistance(distance)
+      }
+
+      return {
+        ...candidate,
+        compatibility,
+        compatibilityBreakdown: breakdown,
+        distance,
+        distanceText,
+      }
+    })
+
+    // Filter by minimum compatibility
+    const compatFiltered = minCompatibility > 0
+      ? enriched.filter((u) => u.compatibility >= minCompatibility)
+      : enriched
+
+    // Sort
+    if (sortBy === 'distance') {
+      compatFiltered.sort((a, b) => {
+        if (a.distance === null && b.distance === null) return 0
+        if (a.distance === null) return 1
+        if (b.distance === null) return -1
+        return a.distance - b.distance
       })
-      .map((user) => {
-        const compatibility = calculateCompatibility(currentUser as any, user as any)
-        const breakdown = getCompatibilityBreakdown(currentUser as any, user as any)
+    } else {
+      compatFiltered.sort((a, b) => b.compatibility - a.compatibility)
+    }
 
-        let distance: number | null = null
-        let distanceText: string | null = null
-        if (currentUser.latitude && currentUser.longitude && user.latitude && user.longitude) {
-          distance = calculateDistance(currentUser.latitude, currentUser.longitude, user.latitude, user.longitude)
-          distanceText = formatDistance(distance)
-        }
-
-        return { ...user, compatibility, breakdown, distance, distanceText }
-      })
-      .filter((u) => u.compatibility >= minCompat)
-      .sort((a, b) => {
-        if (sortByOption === 'distance') {
-          if (a.distance !== null && b.distance === null) return -1
-          if (a.distance === null && b.distance !== null) return 1
-          if (a.distance !== null && b.distance !== null) return a.distance - b.distance
-          return b.compatibility - a.compatibility
-        }
-        return b.compatibility - a.compatibility
-      })
-
-    // ── Cursor-based pagination ──
-    // BEFORE: offset-based (skip + take) — degrades at scale
-    // AFTER: cursor-based — find the cursor position, slice from there
+    // Cursor-based pagination
     let startIndex = 0
-    if (cursorId) {
-      const cursorIndex = scored.findIndex((u) => u.id === cursorId)
-      if (cursorIndex >= 0) {
+    if (cursor) {
+      const cursorIndex = compatFiltered.findIndex((u) => u.id === cursor)
+      if (cursorIndex !== -1) {
         startIndex = cursorIndex + 1
       }
     }
 
-    const page = scored.slice(startIndex, startIndex + limitNum)
-    const nextCursor = page.length === limitNum ? page[page.length - 1].id : null
+    const paginatedUsers = compatFiltered.slice(startIndex, startIndex + limit)
+    const hasMore = startIndex + limit < compatFiltered.length
+    const nextCursor = hasMore ? paginatedUsers[paginatedUsers.length - 1]?.id : null
 
-    const response = {
-      users: page,
+    const result = {
+      users: paginatedUsers,
       pagination: {
-        limit: limitNum,
-        total: scored.length,
+        limit,
+        total: compatFiltered.length,
         nextCursor,
-        hasMore: startIndex + limitNum < scored.length,
+        hasMore,
       },
     }
 
-    // ── Cache result for 5 minutes ──
-    await setCache(cacheKey, response, DISCOVERY_CACHE_TTL)
+    // Cache result
+    await setCache(cacheKey, result, DISCOVERY_CACHE_TTL)
 
-    res.json(response)
+    return res.status(200).json(result)
   } catch (error) {
     console.error('Get potential matches error:', error)
-    res.status(500).json({ message: 'Error fetching potential matches' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }
 
-/**
- * Invalidate discovery cache for all users.
- * Call this when a new user joins, updates profile, etc.
- */
-export const invalidateDiscoveryCache = async () => {
-  await deleteCachePattern(`${CACHE_KEYS.POTENTIAL_MATCHES}*`)
+export const invalidateDiscoveryCache = async (userId: string) => {
+  await deleteCachePattern(`${CACHE_KEYS.POTENTIAL_MATCHES}${userId}:*`)
 }
 
-// ----------------------------------------
-// LIKE A USER
-// ----------------------------------------
-export const likeUser = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
+export const likeUser = async (req: AuthRequest, res: Response) => {
   try {
-    if (!req.userId) {
-      res.status(401).json({ message: 'Not authenticated' })
-      return
+    const userId = req.userId!
+    const { userId: likedUserId } = req.params
+
+    if (userId === likedUserId) {
+      return res.status(400).json({ error: 'You cannot like yourself' })
     }
 
-    const { userId } = req.params
-
-    if (!userId) {
-      res.status(400).json({ message: 'User ID is required' })
-      return
-    }
-
-    if (userId === req.userId) {
-      res.status(400).json({ message: 'Cannot like yourself' })
-      return
-    }
-
-    // Check if target user exists
-    const targetUser = await prisma.user.findUnique({
-      where: { id: userId },
-    })
-
-    if (!targetUser) {
-      res.status(404).json({ message: 'User not found' })
-      return
+    // Check if user exists
+    const likedUser = await prisma.user.findUnique({ where: { id: likedUserId } })
+    if (!likedUser) {
+      return res.status(404).json({ error: 'User not found' })
     }
 
     // Check if already liked
     const existingLike = await prisma.like.findUnique({
-      where: {
-        likerId_likedUserId: {
-          likerId: req.userId,
-          likedUserId: userId,
-        },
-      },
+      where: { likerId_likedUserId: { likerId: userId, likedUserId } },
     })
 
     if (existingLike) {
-      res.status(400).json({ message: 'Already liked this user' })
-      return
+      return res.status(400).json({ error: 'You have already liked this user' })
     }
 
-    // Create like
-    await prisma.like.create({
-      data: {
-        likerId: req.userId,
-        likedUserId: userId,
-      },
-    })
-
-    // Check if it's a mutual like (match!)
-    const mutualLike = await prisma.like.findUnique({
-      where: {
-        likerId_likedUserId: {
-          likerId: userId,
-          likedUserId: req.userId,
-        },
-      },
-    })
-
-    let match = null
-    if (mutualLike) {
-      // Calculate compatibility for the match
-      const currentUser = await prisma.user.findUnique({
-        where: { id: req.userId },
-      })
-      const compatibility = currentUser ? calculateCompatibility(currentUser, targetUser) : 50
-
-      // Create match
-      match = await prisma.match.create({
-        data: {
-          userId1: req.userId,
-          userId2: userId,
-          compatibilityScore: compatibility,
-          status: 'accepted',
-        },
-        include: {
-          user1: {
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              profilePictures: true,
-            },
-          },
-          user2: {
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              profilePictures: true,
-            },
-          },
-        },
-      })
-    }
-
-    res.status(201).json({
-      message: mutualLike ? "It's a match!" : 'User liked successfully',
-      isMatch: !!mutualLike,
-      match,
-    })
-  } catch (error) {
-    console.error('Like user error:', error)
-    res.status(500).json({ message: 'Error liking user' })
-  }
-}
-
-// ----------------------------------------
-// PASS ON A USER
-// ----------------------------------------
-export const passUser = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
-  try {
-    if (!req.userId) {
-      res.status(401).json({ message: 'Not authenticated' })
-      return
-    }
-
-    const { userId } = req.params
-
-    if (!userId) {
-      res.status(400).json({ message: 'User ID is required' })
-      return
-    }
-
-    if (userId === req.userId) {
-      res.status(400).json({ message: 'Cannot pass on yourself' })
-      return
-    }
-
-    // Check if already passed
-    const existingPass = await prisma.pass.findUnique({
-      where: {
-        passerId_passedUserId: {
-          passerId: req.userId,
-          passedUserId: userId,
-        },
-      },
-    })
-
-    if (existingPass) {
-      res.status(400).json({ message: 'Already passed on this user' })
-      return
-    }
-
-    // Create pass
-    await prisma.pass.create({
-      data: {
-        passerId: req.userId,
-        passedUserId: userId,
-      },
-    })
-
-    res.status(201).json({ message: 'User passed successfully' })
-  } catch (error) {
-    console.error('Pass user error:', error)
-    res.status(500).json({ message: 'Error passing on user' })
-  }
-}
-
-// ----------------------------------------
-// BLOCK A USER
-// ----------------------------------------
-export const blockUser = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
-  try {
-    if (!req.userId) {
-      res.status(401).json({ message: 'Not authenticated' })
-      return
-    }
-
-    const { userId } = req.params
-
-    if (!userId) {
-      res.status(400).json({ message: 'User ID is required' })
-      return
-    }
-
-    if (userId === req.userId) {
-      res.status(400).json({ message: 'Cannot block yourself' })
-      return
-    }
-
-    // Check if already blocked
-    const existingBlock = await prisma.block.findUnique({
-      where: {
-        blockerId_blockedUserId: {
-          blockerId: req.userId,
-          blockedUserId: userId,
-        },
-      },
-    })
-
-    if (existingBlock) {
-      res.status(400).json({ message: 'User already blocked' })
-      return
-    }
-
-    // Create block
-    await prisma.block.create({
-      data: {
-        blockerId: req.userId,
-        blockedUserId: userId,
-      },
-    })
-
-    // Remove any existing match
-    await prisma.match.deleteMany({
+    // Check if blocked
+    const blocked = await prisma.block.findFirst({
       where: {
         OR: [
-          { userId1: req.userId, userId2: userId },
-          { userId1: userId, userId2: req.userId },
+          { blockerId: userId, blockedUserId: likedUserId },
+          { blockerId: likedUserId, blockedUserId: userId },
         ],
       },
     })
 
-    res.status(201).json({ message: 'User blocked successfully' })
-  } catch (error) {
-    console.error('Block user error:', error)
-    res.status(500).json({ message: 'Error blocking user' })
-  }
-}
-
-// ----------------------------------------
-// UNDO PASS
-// ----------------------------------------
-export const undoPass = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
-  try {
-    if (!req.userId) {
-      res.status(401).json({ message: 'Not authenticated' })
-      return
+    if (blocked) {
+      return res.status(400).json({ error: 'Cannot like a blocked user' })
     }
 
-    const { userId } = req.params
-
-    // Delete the pass
-    await prisma.pass.delete({
-      where: {
-        passerId_passedUserId: {
-          passerId: req.userId,
-          passedUserId: userId,
-        },
-      },
+    // Create like
+    const like = await prisma.like.create({
+      data: { likerId: userId, likedUserId },
     })
 
-    res.json({ message: 'Pass undone successfully' })
+    // Remove any existing pass
+    await prisma.pass.deleteMany({
+      where: { passerId: userId, passedUserId: likedUserId },
+    })
+
+    // Check for mutual like
+    const mutualLike = await prisma.like.findUnique({
+      where: { likerId_likedUserId: { likerId: likedUserId, likedUserId: userId } },
+    })
+
+    let match = null
+    if (mutualLike) {
+      // Check if match already exists
+      const existingMatch = await prisma.match.findFirst({
+        where: {
+          OR: [
+            { userId1: userId, userId2: likedUserId },
+            { userId1: likedUserId, userId2: userId },
+          ],
+        },
+      })
+
+      if (!existingMatch) {
+        const compatibility = calculateCompatibility(
+          await prisma.user.findUnique({ where: { id: userId } }) as any,
+          likedUser as any
+        )
+
+        match = await prisma.match.create({
+          data: {
+            userId1: userId,
+            userId2: likedUserId,
+            compatibilityScore: compatibility,
+            status: 'active',
+          },
+        })
+      }
+    }
+
+    // Invalidate discovery caches
+    await Promise.all([
+      invalidateDiscoveryCache(userId),
+      invalidateDiscoveryCache(likedUserId),
+    ])
+
+    return res.status(201).json({
+      message: mutualLike ? "It's a match!" : 'User liked successfully',
+      like,
+      match,
+      isMatch: !!mutualLike,
+    })
   } catch (error) {
-    console.error('Undo pass error:', error)
-    res.status(404).json({ message: 'Pass not found' })
+    console.error('Like user error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }
 
-// ----------------------------------------
-// SEARCH USERS
-// ----------------------------------------
-export const searchUsers = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
+export const passUser = async (req: AuthRequest, res: Response) => {
   try {
-    if (!req.userId) {
-      res.status(401).json({ message: 'Not authenticated' })
-      return
+    const userId = req.userId!
+    const { userId: passedUserId } = req.params
+
+    if (userId === passedUserId) {
+      return res.status(400).json({ error: 'You cannot pass on yourself' })
     }
 
+    // Check if user exists
+    const passedUser = await prisma.user.findUnique({ where: { id: passedUserId } })
+    if (!passedUser) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    // Check if already passed
+    const existingPass = await prisma.pass.findUnique({
+      where: { passerId_passedUserId: { passerId: userId, passedUserId } },
+    })
+
+    if (existingPass) {
+      return res.status(400).json({ error: 'You have already passed on this user' })
+    }
+
+    // Create pass
+    const pass = await prisma.pass.create({
+      data: { passerId: userId, passedUserId },
+    })
+
+    // Invalidate discovery cache
+    await invalidateDiscoveryCache(userId)
+
+    return res.status(201).json({ message: 'User passed successfully', pass })
+  } catch (error) {
+    console.error('Pass user error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+export const blockUser = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!
+    const { userId: blockedUserId } = req.params
+
+    if (userId === blockedUserId) {
+      return res.status(400).json({ error: 'You cannot block yourself' })
+    }
+
+    // Check if user exists
+    const blockedUser = await prisma.user.findUnique({ where: { id: blockedUserId } })
+    if (!blockedUser) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    // Check if already blocked
+    const existingBlock = await prisma.block.findUnique({
+      where: { blockerId_blockedUserId: { blockerId: userId, blockedUserId } },
+    })
+
+    if (existingBlock) {
+      return res.status(400).json({ error: 'User is already blocked' })
+    }
+
+    // Create block
+    const block = await prisma.block.create({
+      data: { blockerId: userId, blockedUserId },
+    })
+
+    // Remove any existing likes/passes/matches
+    await Promise.all([
+      prisma.like.deleteMany({
+        where: {
+          OR: [
+            { likerId: userId, likedUserId: blockedUserId },
+            { likerId: blockedUserId, likedUserId: userId },
+          ],
+        },
+      }),
+      prisma.pass.deleteMany({
+        where: {
+          OR: [
+            { passerId: userId, passedUserId: blockedUserId },
+            { passerId: blockedUserId, passedUserId: userId },
+          ],
+        },
+      }),
+      prisma.match.deleteMany({
+        where: {
+          OR: [
+            { userId1: userId, userId2: blockedUserId },
+            { userId1: blockedUserId, userId2: userId },
+          ],
+        },
+      }),
+    ])
+
+    // Invalidate discovery caches
+    await Promise.all([
+      invalidateDiscoveryCache(userId),
+      invalidateDiscoveryCache(blockedUserId),
+    ])
+
+    return res.status(201).json({ message: 'User blocked successfully', block })
+  } catch (error) {
+    console.error('Block user error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+export const undoPass = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!
+    const { userId: passedUserId } = req.params
+
+    const pass = await prisma.pass.findUnique({
+      where: { passerId_passedUserId: { passerId: userId, passedUserId } },
+    })
+
+    if (!pass) {
+      return res.status(404).json({ error: 'Pass not found' })
+    }
+
+    await prisma.pass.delete({
+      where: { id: pass.id },
+    })
+
+    // Invalidate discovery cache
+    await invalidateDiscoveryCache(userId)
+
+    return res.status(200).json({ message: 'Pass undone successfully' })
+  } catch (error) {
+    console.error('Undo pass error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+export const searchUsers = async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!
     const {
-      query = '',
-      location = '',
-      hobbies = '',
-      talents = '',
-      ageMin,
-      ageMax,
-      distance,
+      query,
       gender,
       lookingFor,
-      minCompatibility = '0',
-      page = '1',
-      limit = '20',
-    } = req.query
+      minAge,
+      maxAge,
+      city,
+      country,
+      hobbies,
+      talents,
+      interests,
+      maxDistance: maxDistStr,
+      vibeTags: vibeTagsParam,
+      limit: limitStr = '20',
+      offset: offsetStr = '0',
+    } = req.query as Record<string, string | undefined>
 
-    const pageNum = parseInt(page as string, 10)
-    const limitNum = parseInt(limit as string, 10)
-    const minCompat = parseInt(minCompatibility as string, 10)
-    const skip = (pageNum - 1) * limitNum
+    const limit = parseInt(limitStr) || 20
+    const offset = parseInt(offsetStr) || 0
 
     // Get current user
     const currentUser = await prisma.user.findUnique({
-      where: { id: req.userId },
+      where: { id: userId },
+      select: SAFE_USER_SELECT,
     })
 
     if (!currentUser) {
-      res.status(404).json({ message: 'User not found' })
-      return
+      return res.status(404).json({ error: 'User not found' })
     }
 
-    // Get excluded user IDs (already liked, passed, blocked, matched, self)
-    const likes = await prisma.like.findMany({
-      where: { likerId: req.userId },
-      select: { likedUserId: true },
-    })
-    const passes = await prisma.pass.findMany({
-      where: { passerId: req.userId },
-      select: { passedUserId: true },
-    })
-    const blocks = await prisma.block.findMany({
-      where: { OR: [{ blockerId: req.userId }, { blockedUserId: req.userId }] },
-      select: { blockerId: true, blockedUserId: true },
-    })
-    const matches = await prisma.match.findMany({
-      where: { OR: [{ userId1: req.userId }, { userId2: req.userId }] },
-    })
+    // Get blocked user IDs
+    const [blocksGiven, blocksReceived] = await Promise.all([
+      prisma.block.findMany({ where: { blockerId: userId }, select: { blockedUserId: true } }),
+      prisma.block.findMany({ where: { blockedUserId: userId }, select: { blockerId: true } }),
+    ])
 
-    const excludedUserIds = [
-      ...likes.map((l) => l.likedUserId),
-      ...passes.map((p) => p.passedUserId),
-      ...blocks.flatMap((b) => [b.blockerId, b.blockedUserId]),
-      ...matches.map((m) => (m.userId1 === req.userId ? m.userId2 : m.userId1)),
-      req.userId,
-    ]
+    const blockedIds = new Set<string>([userId])
+    blocksGiven.forEach((b) => blockedIds.add(b.blockedUserId))
+    blocksReceived.forEach((b) => blockedIds.add(b.blockerId))
 
     // Build where clause
-    const whereClause: any = {
-      id: { notIn: excludedUserIds },
+    const where: any = {
+      id: { notIn: Array.from(blockedIds) },
     }
 
-    // Gender filter
-    if (gender && gender !== 'any') {
-      whereClause.gender = gender
+    if (query) {
+      where.OR = [
+        { firstName: { contains: query, mode: 'insensitive' } },
+        { lastName: { contains: query, mode: 'insensitive' } },
+        { username: { contains: query, mode: 'insensitive' } },
+      ]
     }
 
-    // Looking for filter
+    if (gender) {
+      where.gender = { equals: gender, mode: 'insensitive' }
+    }
+
     if (lookingFor) {
-      whereClause.lookingFor = lookingFor
+      where.lookingFor = { equals: lookingFor, mode: 'insensitive' }
     }
 
-    // Fetch all potential users (include vibeTags for display)
-    const allUsers = await prisma.user.findMany({
-      where: whereClause,
-      include: { vibeTags: true },
+    if (city) {
+      where.locationCity = { contains: city, mode: 'insensitive' }
+    }
+
+    if (country) {
+      where.locationCountry = { contains: country, mode: 'insensitive' }
+    }
+
+    if (hobbies) {
+      where.hobbies = { hasSome: hobbies.split(',').map((h) => h.trim()) }
+    }
+
+    if (talents) {
+      where.talents = { hasSome: talents.split(',').map((t) => t.trim()) }
+    }
+
+    if (interests) {
+      where.interests = { hasSome: interests.split(',').map((i) => i.trim()) }
+    }
+
+    // Fetch users
+    const users = await prisma.user.findMany({
+      where,
+      select: {
+        ...SAFE_USER_SELECT,
+        vibeTags: { select: { id: true, label: true, emoji: true, category: true } },
+      },
     })
 
-    // Apply filters
-    let filteredUsers = allUsers
+    // In-memory filters for age, distance, vibeTags
+    let filtered = users
 
-    // Username search
-    if (query) {
-      const searchQuery = (query as string).toLowerCase()
-      filteredUsers = filteredUsers.filter((user) => {
-        const username = user.username.toLowerCase()
-        const firstName = user.firstName.toLowerCase()
-        const lastName = user.lastName.toLowerCase()
-        return (
-          username.includes(searchQuery) ||
-          firstName.includes(searchQuery) ||
-          lastName.includes(searchQuery)
+    if (minAge || maxAge) {
+      filtered = filtered.filter((u) => {
+        const age = Math.floor(
+          (Date.now() - new Date(u.dateOfBirth).getTime()) / (365.25 * 24 * 60 * 60 * 1000)
         )
-      })
-    }
-
-    // Location search
-    if (location) {
-      const locationQuery = (location as string).toLowerCase()
-      filteredUsers = filteredUsers.filter((user) => {
-        if (!user.locationCity && !user.locationCountry) return false
-        const city = (user.locationCity || '').toLowerCase()
-        const country = (user.locationCountry || '').toLowerCase()
-        return city.includes(locationQuery) || country.includes(locationQuery)
-      })
-    }
-
-    // Hobbies search
-    if (hobbies) {
-      const hobbiesQuery = (hobbies as string).toLowerCase().split(',')
-      filteredUsers = filteredUsers.filter((user) =>
-        hobbiesQuery.some((hobby) =>
-          user.hobbies.some((h) => h.toLowerCase().includes(hobby.trim()))
-        )
-      )
-    }
-
-    // Talents search
-    if (talents) {
-      const talentsQuery = (talents as string).toLowerCase().split(',')
-      filteredUsers = filteredUsers.filter((user) =>
-        talentsQuery.some((talent) =>
-          user.talents.some((t) => t.toLowerCase().includes(talent.trim()))
-        )
-      )
-    }
-
-    // Age range filter
-    if (ageMin || ageMax) {
-      const today = new Date()
-      filteredUsers = filteredUsers.filter((user) => {
-        const birthDate = new Date(user.dateOfBirth)
-        let age = today.getFullYear() - birthDate.getFullYear()
-        const monthDiff = today.getMonth() - birthDate.getMonth()
-        if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
-          age--
-        }
-        if (ageMin && age < parseInt(ageMin as string)) return false
-        if (ageMax && age > parseInt(ageMax as string)) return false
+        if (minAge && age < parseInt(minAge)) return false
+        if (maxAge && age > parseInt(maxAge)) return false
         return true
       })
     }
 
-    // Distance filter
-    if (distance && currentUser.latitude && currentUser.longitude) {
-      const maxDistance = parseInt(distance as string)
-      filteredUsers = filteredUsers.filter((user) => {
-        if (!user.latitude || !user.longitude) return false
+    const maxDistance = maxDistStr ? parseFloat(maxDistStr) : undefined
+    if (maxDistance && currentUser.latitude && currentUser.longitude) {
+      filtered = filtered.filter((u) => {
+        if (!u.latitude || !u.longitude) return false
         const dist = calculateDistance(
           currentUser.latitude!,
           currentUser.longitude!,
-          user.latitude,
-          user.longitude
+          u.latitude,
+          u.longitude
         )
         return dist <= maxDistance
       })
     }
 
-    // Calculate compatibility, distance, and filter
-    const usersWithCompatibility = filteredUsers
-      .map((user) => {
-        const compatibility = calculateCompatibility(currentUser, user)
-        const breakdown = getCompatibilityBreakdown(currentUser, user)
-
-        // Calculate distance if both users have location data
-        let distanceKm = null
-        let distanceText = null
-        if (currentUser.latitude && currentUser.longitude && user.latitude && user.longitude) {
-          distanceKm = calculateDistance(
-            currentUser.latitude,
-            currentUser.longitude,
-            user.latitude,
-            user.longitude
-          )
-          distanceText = formatDistance(distanceKm)
-        }
-
-        return {
-          ...user,
-          compatibility,
-          breakdown,
-          distance: distanceKm,
-          distanceText,
-        }
+    // Vibe tag filter
+    const vibeTagFilter = vibeTagsParam ? vibeTagsParam.split(',').map((t) => t.trim().toLowerCase()) : []
+    if (vibeTagFilter.length > 0) {
+      filtered = filtered.filter((u) => {
+        const userTags = (u.vibeTags || []).map((t) => t.label.toLowerCase())
+        return vibeTagFilter.some((tag) => userTags.includes(tag))
       })
-      .filter((user) => user.compatibility >= minCompat)
-      .sort((a, b) => b.compatibility - a.compatibility)
+    }
 
-    // Paginate
-    const paginatedUsers = usersWithCompatibility.slice(skip, skip + limitNum)
-
-    // Remove sensitive data
-    const sanitizedUsers = paginatedUsers.map((user) => {
-      const {
-        password,
-        refreshToken,
-        resetPasswordToken,
-        emailVerificationToken,
-        phoneVerificationToken,
-        ...safeUser
-      } = user
-      return safeUser
+    // Enrich with compatibility and distance
+    const enriched = filtered.map((u) => {
+      const compatibility = calculateCompatibility(currentUser as any, u as any)
+      let distance: number | null = null
+      let distanceText: string | null = null
+      if (currentUser.latitude && currentUser.longitude && u.latitude && u.longitude) {
+        distance = calculateDistance(currentUser.latitude, currentUser.longitude, u.latitude, u.longitude)
+        distanceText = formatDistance(distance)
+      }
+      return { ...u, compatibility, distance, distanceText }
     })
 
-    res.json({
-      users: sanitizedUsers,
-      pagination: {
-        page: pageNum,
-        limit: limitNum,
-        total: usersWithCompatibility.length,
-        totalPages: Math.ceil(usersWithCompatibility.length / limitNum),
-        hasMore: skip + limitNum < usersWithCompatibility.length,
-      },
+    // Sort by compatibility
+    enriched.sort((a, b) => b.compatibility - a.compatibility)
+
+    // Paginate
+    const total = enriched.length
+    const paginatedUsers = enriched.slice(offset, offset + limit)
+
+    return res.status(200).json({
+      users: paginatedUsers,
+      pagination: { total, limit, offset, hasMore: offset + limit < total },
     })
   } catch (error) {
     console.error('Search users error:', error)
-    res.status(500).json({ message: 'Error searching users' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }
 
-// ----------------------------------------
-// UNBLOCK A USER
-// ----------------------------------------
-export const unblockUser = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
+export const unblockUser = async (req: AuthRequest, res: Response) => {
   try {
-    if (!req.userId) {
-      res.status(401).json({ message: 'Not authenticated' })
-      return
-    }
+    const userId = req.userId!
+    const { userId: blockedUserId } = req.params
 
-    const { userId } = req.params
-
-    if (!userId) {
-      res.status(400).json({ message: 'User ID is required' })
-      return
-    }
-
-    // Check if block exists
     const block = await prisma.block.findUnique({
-      where: {
-        blockerId_blockedUserId: {
-          blockerId: req.userId,
-          blockedUserId: userId,
-        },
-      },
+      where: { blockerId_blockedUserId: { blockerId: userId, blockedUserId } },
     })
 
     if (!block) {
-      res.status(404).json({ message: 'User is not blocked' })
-      return
+      return res.status(404).json({ error: 'Block not found' })
     }
 
-    // Delete the block
     await prisma.block.delete({
-      where: {
-        blockerId_blockedUserId: {
-          blockerId: req.userId,
-          blockedUserId: userId,
-        },
-      },
+      where: { id: block.id },
     })
 
-    res.json({ message: 'User unblocked successfully' })
+    // Invalidate discovery caches
+    await Promise.all([
+      invalidateDiscoveryCache(userId),
+      invalidateDiscoveryCache(blockedUserId),
+    ])
+
+    return res.status(200).json({ message: 'User unblocked successfully' })
   } catch (error) {
     console.error('Unblock user error:', error)
-    res.status(500).json({ message: 'Error unblocking user' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }
 
-// ----------------------------------------
-// GET BLOCKED USERS
-// ----------------------------------------
-export const getBlockedUsers = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
+export const getBlockedUsers = async (req: AuthRequest, res: Response) => {
   try {
-    if (!req.userId) {
-      res.status(401).json({ message: 'Not authenticated' })
-      return
-    }
+    const userId = req.userId!
 
     const blocks = await prisma.block.findMany({
-      where: {
-        blockerId: req.userId,
-      },
+      where: { blockerId: userId },
       include: {
         blockedUser: {
           select: {
@@ -814,118 +670,56 @@ export const getBlockedUsers = async (
           },
         },
       },
-      orderBy: {
-        createdAt: 'desc',
-      },
+      orderBy: { createdAt: 'desc' },
     })
 
-    const blockedUsers = blocks.map((block) => ({
-      ...block.blockedUser,
-      blockedAt: block.createdAt,
+    const blockedUsers = blocks.map((b) => ({
+      ...b.blockedUser,
+      blockedAt: b.createdAt,
     }))
 
-    res.json({ blockedUsers })
+    return res.status(200).json({ users: blockedUsers })
   } catch (error) {
     console.error('Get blocked users error:', error)
-    res.status(500).json({ message: 'Error fetching blocked users' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }
 
-// ----------------------------------------
-// GET LIKED USERS
-// ----------------------------------------
-export const getLikedUsers = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
+export const getLikedUsers = async (req: AuthRequest, res: Response) => {
   try {
-    if (!req.userId) {
-      res.status(401).json({ message: 'Not authenticated' })
-      return
-    }
+    const userId = req.userId!
 
-    // Get current user for compatibility calculation
     const currentUser = await prisma.user.findUnique({
-      where: { id: req.userId },
+      where: { id: userId },
+      select: SAFE_USER_SELECT,
     })
 
     if (!currentUser) {
-      res.status(404).json({ message: 'User not found' })
-      return
+      return res.status(404).json({ error: 'User not found' })
     }
 
-    // Get all users current user has liked
     const likes = await prisma.like.findMany({
-      where: { likerId: req.userId },
+      where: { likerId: userId },
       include: {
-        likedUser: true,
+        likedUser: {
+          select: SAFE_USER_SELECT,
+        },
       },
-      orderBy: {
-        createdAt: 'desc', // Most recent likes first
-      },
+      orderBy: { createdAt: 'desc' },
     })
 
-    // Get all matches to identify mutual likes
-    const matches = await prisma.match.findMany({
-      where: {
-        OR: [
-          { userId1: req.userId },
-          { userId2: req.userId },
-        ],
-      },
-    })
-
-    const matchedUserIds = new Set(
-      matches.map((match) =>
-        match.userId1 === req.userId ? match.userId2 : match.userId1
-      )
-    )
-
-    // Map liked users with match status, compatibility, and distance
-    const likedUsersWithStatus = likes.map((like) => {
-      const {
-        password,
-        refreshToken,
-        resetPasswordToken,
-        emailVerificationToken,
-        phoneVerificationToken,
-        ...safeUser
-      } = like.likedUser
-      const isMatch = matchedUserIds.has(like.likedUserId)
-      const compatibility = calculateCompatibility(currentUser, like.likedUser)
-      const breakdown = getCompatibilityBreakdown(currentUser, like.likedUser)
-
-      // Calculate distance if both users have location data
-      let distance = null
-      let distanceText = null
-      if (currentUser.latitude && currentUser.longitude && like.likedUser.latitude && like.likedUser.longitude) {
-        distance = calculateDistance(
-          currentUser.latitude,
-          currentUser.longitude,
-          like.likedUser.latitude,
-          like.likedUser.longitude
-        )
-        distanceText = formatDistance(distance)
-      }
-
+    const likedUsers = likes.map((l) => {
+      const compatibility = calculateCompatibility(currentUser as any, l.likedUser as any)
       return {
-        ...safeUser,
-        isMatch,
+        ...l.likedUser,
         compatibility,
-        breakdown,
-        likedAt: like.createdAt,
-        distance,
-        distanceText,
+        likedAt: l.createdAt,
       }
     })
 
-    res.json({
-      likedUsers: likedUsersWithStatus,
-      total: likedUsersWithStatus.length,
-      matchesCount: likedUsersWithStatus.filter((u) => u.isMatch).length,
-    })
+    return res.status(200).json({ users: likedUsers })
   } catch (error) {
     console.error('Get liked users error:', error)
-    res.status(500).json({ message: 'Error fetching liked users' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }

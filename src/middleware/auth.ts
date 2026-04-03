@@ -3,9 +3,8 @@ import { AuthRequest } from '../types'
 import { verifyToken } from '../utils/jwt'
 
 /**
- * Middleware to authenticate requests using JWT access tokens
- * BEFORE: Read token from Authorization: Bearer <token> header (localStorage on frontend)
- * AFTER: Read token from httpOnly cookie "access_token" — immune to XSS theft
+ * Middleware to authenticate requests using JWT access tokens.
+ * Reads token from httpOnly cookie "access_token".
  */
 export const authenticate = async (
   req: AuthRequest,
@@ -13,8 +12,6 @@ export const authenticate = async (
   next: NextFunction
 ) => {
   try {
-    // BEFORE: const authHeader = req.headers.authorization; token = authHeader.split(' ')[1]
-    // AFTER: Read from httpOnly cookie
     const token = req.cookies?.access_token
 
     if (!token) {
@@ -24,7 +21,6 @@ export const authenticate = async (
       })
     }
 
-    // Verify and decode token
     let decoded
     try {
       decoded = verifyToken(token)
@@ -44,7 +40,6 @@ export const authenticate = async (
       throw error
     }
 
-    // Ensure this is an access token, not a refresh token
     if (decoded.type && decoded.type !== 'access') {
       return res.status(401).json({
         message: 'Invalid token type. Please use an access token.',
@@ -52,9 +47,7 @@ export const authenticate = async (
       })
     }
 
-    // Attach userId to request
     req.userId = decoded.userId
-
     return next()
   } catch (error) {
     console.error('Auth middleware error:', error)

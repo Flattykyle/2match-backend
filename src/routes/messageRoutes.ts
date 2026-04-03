@@ -17,10 +17,9 @@ import { checkActiveHours } from '../middleware/safety'
 
 const router = Router()
 
-// All routes require authentication
 router.use(authenticate)
 
-// Chat request routes (must be before :conversationId param routes)
+// Chat request routes
 router.get('/requests', getChatRequests)
 router.post('/requests/:conversationId/accept', acceptChatRequest)
 router.post('/requests/:conversationId/decline', declineChatRequest)

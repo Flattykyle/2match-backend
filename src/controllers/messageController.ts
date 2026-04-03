@@ -3,26 +3,18 @@ import { AuthRequest } from '../types'
 import prisma from '../utils/prisma'
 
 // ----------------------------------------
-// GET ALL CONVERSATIONS
+// Get all conversations for the current user
 // ----------------------------------------
-export const getConversations = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
+export const getConversations = async (req: AuthRequest, res: Response) => {
   try {
-    if (!req.userId) {
-      res.status(401).json({ message: 'Not authenticated' })
-      return
-    }
+    const userId = req.userId!
 
-    // Only show accepted conversations in main inbox
     const conversations = await prisma.conversation.findMany({
       where: {
-        OR: [
-          { user1Id: req.userId },
-          { user2Id: req.userId },
+        AND: [
+          { OR: [{ user1Id: userId }, { user2Id: userId }] },
+          { requestStatus: 'accepted' },
         ],
-        requestStatus: 'accepted',
       },
       include: {
         user1: {
@@ -32,6 +24,8 @@ export const getConversations = async (
             firstName: true,
             lastName: true,
             profilePictures: true,
+            isOnline: true,
+            lastActive: true,
           },
         },
         user2: {
@@ -41,6 +35,8 @@ export const getConversations = async (
             firstName: true,
             lastName: true,
             profilePictures: true,
+            isOnline: true,
+            lastActive: true,
           },
         },
         messages: {
@@ -49,197 +45,144 @@ export const getConversations = async (
           select: {
             id: true,
             content: true,
-            sentAt: true,
-            isRead: true,
             senderId: true,
+            isRead: true,
+            sentAt: true,
           },
         },
       },
-      orderBy: {
-        lastMessageAt: 'desc',
-      },
+      orderBy: { lastMessageAt: 'desc' },
     })
 
-    // Get unread count for each conversation
-    const conversationsWithUnread = await Promise.all(
-      conversations.map(async (conversation) => {
+    // Map to add otherUser, lastMessage, unreadCount
+    const mapped = await Promise.all(
+      conversations.map(async (conv) => {
+        const otherUser = conv.user1Id === userId ? conv.user2 : conv.user1
+        const lastMessage = conv.messages[0] || null
+
         const unreadCount = await prisma.message.count({
           where: {
-            conversationId: conversation.id,
-            receiverId: req.userId,
+            conversationId: conv.id,
+            receiverId: userId,
             isRead: false,
+            isDeleted: false,
           },
         })
 
-        // Determine the other user
-        const otherUser =
-          conversation.user1Id === req.userId
-            ? conversation.user2
-            : conversation.user1
-
         return {
-          ...conversation,
+          id: conv.id,
           otherUser,
-          lastMessage: conversation.messages[0] || null,
+          lastMessage,
           unreadCount,
+          lastMessageAt: conv.lastMessageAt,
+          createdAt: conv.createdAt,
         }
       })
     )
 
-    res.json(conversationsWithUnread)
+    return res.status(200).json({ conversations: mapped })
   } catch (error) {
     console.error('Get conversations error:', error)
-    res.status(500).json({ message: 'Error fetching conversations' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }
 
 // ----------------------------------------
-// GET OR CREATE CONVERSATION
+// Get or create a conversation with a user
 // ----------------------------------------
-export const getOrCreateConversation = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
+export const getOrCreateConversation = async (req: AuthRequest, res: Response) => {
   try {
-    if (!req.userId) {
-      res.status(401).json({ message: 'Not authenticated' })
-      return
+    const userId = req.userId!
+    const { userId: otherUserId } = req.params
+
+    if (userId === otherUserId) {
+      return res.status(400).json({ error: 'Cannot create a conversation with yourself' })
     }
 
-    const { userId } = req.params
-
-    if (!userId) {
-      res.status(400).json({ message: 'User ID is required' })
-      return
-    }
-
-    if (userId === req.userId) {
-      res.status(400).json({ message: 'Cannot create conversation with yourself' })
-      return
-    }
-
-    // Check if conversation already exists
-    let conversation = await prisma.conversation.findFirst({
-      where: {
-        OR: [
-          { user1Id: req.userId, user2Id: userId },
-          { user1Id: userId, user2Id: req.userId },
-        ],
-      },
-      include: {
-        user1: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            profilePictures: true,
-          },
-        },
-        user2: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            profilePictures: true,
-          },
-        },
+    // Check if other user exists
+    const otherUser = await prisma.user.findUnique({
+      where: { id: otherUserId },
+      select: {
+        id: true,
+        username: true,
+        firstName: true,
+        lastName: true,
+        profilePictures: true,
+        isOnline: true,
+        lastActive: true,
       },
     })
 
-    // Create conversation if it doesn't exist
+    if (!otherUser) {
+      return res.status(404).json({ error: 'User not found' })
+    }
+
+    // Find existing conversation (check both directions)
+    let conversation = await prisma.conversation.findFirst({
+      where: {
+        OR: [
+          { user1Id: userId, user2Id: otherUserId },
+          { user1Id: otherUserId, user2Id: userId },
+        ],
+      },
+    })
+
+    // Create if not found
     if (!conversation) {
       conversation = await prisma.conversation.create({
         data: {
-          user1Id: req.userId,
-          user2Id: userId,
-        },
-        include: {
-          user1: {
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              profilePictures: true,
-            },
-          },
-          user2: {
-            select: {
-              id: true,
-              username: true,
-              firstName: true,
-              lastName: true,
-              profilePictures: true,
-            },
-          },
+          user1Id: userId,
+          user2Id: otherUserId,
         },
       })
     }
 
-    // Determine the other user
-    const otherUser =
-      conversation.user1Id === req.userId
-        ? conversation.user2
-        : conversation.user1
-
-    res.json({
-      ...conversation,
-      otherUser,
+    return res.status(200).json({
+      conversation: {
+        ...conversation,
+        otherUser,
+      },
     })
   } catch (error) {
     console.error('Get or create conversation error:', error)
-    res.status(500).json({ message: 'Error creating conversation' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }
 
 // ----------------------------------------
-// GET CONVERSATION MESSAGES
+// Get messages for a conversation
 // ----------------------------------------
-export const getMessages = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
+export const getMessages = async (req: AuthRequest, res: Response) => {
   try {
-    if (!req.userId) {
-      res.status(401).json({ message: 'Not authenticated' })
-      return
-    }
-
+    const userId = req.userId!
     const { conversationId } = req.params
-    const { limit = '50', before } = req.query
+    const { limit: limitStr = '50' } = req.query as Record<string, string>
+
+    const limit = parseInt(limitStr) || 50
 
     // Verify user is part of conversation
     const conversation = await prisma.conversation.findFirst({
       where: {
         id: conversationId,
-        OR: [
-          { user1Id: req.userId },
-          { user2Id: req.userId },
-        ],
+        OR: [{ user1Id: userId }, { user2Id: userId }],
       },
     })
 
     if (!conversation) {
-      res.status(404).json({ message: 'Conversation not found' })
-      return
+      return res.status(404).json({ error: 'Conversation not found' })
     }
 
+    // Fetch messages
     const messages = await prisma.message.findMany({
       where: {
         conversationId,
-        isDeleted: false, // Exclude soft-deleted expired messages
-        ...(before && {
-          sentAt: {
-            lt: new Date(before as string),
-          },
-        }),
+        isDeleted: false,
       },
       include: {
         sender: {
           select: {
             id: true,
+            username: true,
             firstName: true,
             lastName: true,
             profilePictures: true,
@@ -253,69 +196,54 @@ export const getMessages = async (
           },
         },
       },
-      orderBy: {
-        sentAt: 'desc',
-      },
-      take: parseInt(limit as string, 10),
+      orderBy: { sentAt: 'desc' },
+      take: limit,
     })
 
-    res.json(messages.reverse()) // Return in chronological order
+    // Reverse for chronological order
+    messages.reverse()
+
+    return res.status(200).json({ messages })
   } catch (error) {
     console.error('Get messages error:', error)
-    res.status(500).json({ message: 'Error fetching messages' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }
 
 // ----------------------------------------
-// SEND MESSAGE (REST endpoint as fallback)
+// Send a message (REST fallback)
 // ----------------------------------------
-export const sendMessage = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
+export const sendMessage = async (req: AuthRequest, res: Response) => {
   try {
-    if (!req.userId) {
-      res.status(401).json({ message: 'Not authenticated' })
-      return
-    }
-
+    const userId = req.userId!
     const { conversationId } = req.params
     const { content } = req.body
 
-    if (!content || content.trim() === '') {
-      res.status(400).json({ message: 'Message content is required' })
-      return
+    if (!content || !content.trim()) {
+      return res.status(400).json({ error: 'Message content is required' })
     }
 
     // Verify user is part of conversation
     const conversation = await prisma.conversation.findFirst({
       where: {
         id: conversationId,
-        OR: [
-          { user1Id: req.userId },
-          { user2Id: req.userId },
-        ],
+        OR: [{ user1Id: userId }, { user2Id: userId }],
       },
     })
 
     if (!conversation) {
-      res.status(404).json({ message: 'Conversation not found' })
-      return
+      return res.status(404).json({ error: 'Conversation not found' })
     }
 
-    // Determine receiver
-    const receiverId =
-      conversation.user1Id === req.userId
-        ? conversation.user2Id
-        : conversation.user1Id
+    const receiverId = conversation.user1Id === userId ? conversation.user2Id : conversation.user1Id
 
-    const now = new Date()
-    const expiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
+    // Create message with 7 day expiry
+    const expiresAt = new Date()
+    expiresAt.setDate(expiresAt.getDate() + 7)
 
-    // Create message with expiry
     const message = await prisma.message.create({
       data: {
-        senderId: req.userId,
+        senderId: userId,
         receiverId,
         conversationId,
         content: content.trim(),
@@ -325,76 +253,73 @@ export const sendMessage = async (
         sender: {
           select: {
             id: true,
+            username: true,
             firstName: true,
             lastName: true,
             profilePictures: true,
           },
         },
-        reactions: true,
+        reactions: {
+          select: {
+            id: true,
+            userId: true,
+            emoji: true,
+          },
+        },
       },
     })
 
-    // Clear expiresAt on the other user's previous messages (they got a reply)
+    // Reply clears expiry on other user's previous messages
     await prisma.message.updateMany({
       where: {
         conversationId,
         senderId: receiverId,
-        receiverId: req.userId,
+        receiverId: userId,
         expiresAt: { not: null },
-        isDeleted: false,
       },
-      data: { expiresAt: null },
+      data: {
+        expiresAt: null,
+      },
     })
 
-    // Update conversation
+    // Update conversation lastMessageAt
     await prisma.conversation.update({
       where: { id: conversationId },
-      data: { lastMessageAt: now },
+      data: { lastMessageAt: new Date() },
     })
 
-    res.status(201).json(message)
+    return res.status(201).json({ message })
   } catch (error) {
     console.error('Send message error:', error)
-    res.status(500).json({ message: 'Error sending message' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }
 
 // ----------------------------------------
-// MARK MESSAGES AS READ
+// Mark messages as read
 // ----------------------------------------
-export const markAsRead = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
+export const markAsRead = async (req: AuthRequest, res: Response) => {
   try {
-    if (!req.userId) {
-      res.status(401).json({ message: 'Not authenticated' })
-      return
-    }
-
+    const userId = req.userId!
     const { conversationId } = req.params
 
     // Verify user is part of conversation
     const conversation = await prisma.conversation.findFirst({
       where: {
         id: conversationId,
-        OR: [
-          { user1Id: req.userId },
-          { user2Id: req.userId },
-        ],
+        OR: [{ user1Id: userId }, { user2Id: userId }],
       },
     })
 
     if (!conversation) {
-      res.status(404).json({ message: 'Conversation not found' })
-      return
+      return res.status(404).json({ error: 'Conversation not found' })
     }
 
-    // Mark all messages as read with timestamp
-    await prisma.message.updateMany({
+    // Update all unread messages addressed to this user
+    const result = await prisma.message.updateMany({
       where: {
         conversationId,
-        receiverId: req.userId,
+        receiverId: userId,
         isRead: false,
       },
       data: {
@@ -403,36 +328,34 @@ export const markAsRead = async (
       },
     })
 
-    res.json({ message: 'Messages marked as read' })
+    return res.status(200).json({
+      message: 'Messages marked as read',
+      count: result.count,
+    })
   } catch (error) {
     console.error('Mark as read error:', error)
-    res.status(500).json({ message: 'Error marking messages as read' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }
 
 // ----------------------------------------
-// GET UNREAD COUNT
+// Get unread message count
 // ----------------------------------------
-export const getUnreadCount = async (
-  req: AuthRequest,
-  res: Response
-): Promise<void> => {
+export const getUnreadCount = async (req: AuthRequest, res: Response) => {
   try {
-    if (!req.userId) {
-      res.status(401).json({ message: 'Not authenticated' })
-      return
-    }
+    const userId = req.userId!
 
-    const unreadCount = await prisma.message.count({
+    const count = await prisma.message.count({
       where: {
-        receiverId: req.userId,
+        receiverId: userId,
         isRead: false,
+        isDeleted: false,
       },
     })
 
-    res.json({ unreadCount })
+    return res.status(200).json({ unreadCount: count })
   } catch (error) {
     console.error('Get unread count error:', error)
-    res.status(500).json({ message: 'Error fetching unread count' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }

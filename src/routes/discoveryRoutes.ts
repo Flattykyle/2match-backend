@@ -16,16 +16,12 @@ import { checkFreeTierLikeLimit } from '../middleware/subscription'
 
 const router = Router()
 
-// All routes require authentication
 router.use(authenticate)
 
-// Discovery routes
 router.get('/potential-matches', getPotentialMatches)
 router.get('/liked-users', getLikedUsers)
 router.get('/blocked-users', getBlockedUsers)
 router.get('/search', searchUsers)
-// checkFreeTierLikeLimit: FREE users limited to 5 likes/day
-// checkSlowMode: if slow mode on and daily match limit reached, reject
 router.post('/like/:userId', checkFreeTierLikeLimit, checkSlowMode, likeUser)
 router.post('/pass/:userId', passUser)
 router.post('/block/:userId', blockUser)

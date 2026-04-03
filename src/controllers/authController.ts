@@ -1,6 +1,5 @@
 import { Request, Response } from 'express'
 import bcrypt from 'bcryptjs'
-import { AuthRequest, LoginDto, RegisterDto } from '../types'
 import prisma from '../utils/prisma'
 import {
   generateTokenPair,
@@ -12,20 +11,15 @@ import {
   validateRefreshToken,
   revokeRefreshToken,
 } from '../utils/jwt'
-import {
-  isValidEmail,
-  getPasswordValidationError,
-  isValidAge
-} from '../utils/validation'
+import { isValidEmail, getPasswordValidationError, isValidAge } from '../utils/validation'
+import { AuthRequest, LoginDto, RegisterDto } from '../types'
 
-// BEFORE: Tokens returned in JSON body, stored in localStorage on frontend
-// AFTER: Access token in httpOnly cookie (15min), refresh token in httpOnly cookie (7d) + Redis
 const isProduction = process.env.NODE_ENV === 'production'
 
 const ACCESS_COOKIE_OPTIONS = {
   httpOnly: true,
   secure: isProduction,
-  sameSite: isProduction ? 'none' as const : 'lax' as const,
+  sameSite: (isProduction ? 'none' : 'lax') as 'none' | 'lax',
   path: '/',
   maxAge: 15 * 60 * 1000, // 15 minutes
 }
@@ -33,27 +27,22 @@ const ACCESS_COOKIE_OPTIONS = {
 const REFRESH_COOKIE_OPTIONS = {
   httpOnly: true,
   secure: isProduction,
-  sameSite: isProduction ? 'none' as const : 'lax' as const,
-  path: '/api/auth', // Only sent to auth endpoints
+  sameSite: (isProduction ? 'none' : 'lax') as 'none' | 'lax',
+  path: '/api/auth',
   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
 }
 
-/** Helper: set auth cookies on response */
 const setAuthCookies = (res: Response, accessToken: string, refreshToken: string) => {
   res.cookie('access_token', accessToken, ACCESS_COOKIE_OPTIONS)
   res.cookie('refresh_token', refreshToken, REFRESH_COOKIE_OPTIONS)
 }
 
-/** Helper: clear auth cookies on response */
 const clearAuthCookies = (res: Response) => {
-  res.clearCookie('access_token', { path: '/' })
-  res.clearCookie('refresh_token', { path: '/api/auth' })
+  res.clearCookie('access_token', ACCESS_COOKIE_OPTIONS)
+  res.clearCookie('refresh_token', REFRESH_COOKIE_OPTIONS)
 }
 
-// ----------------------------------------
-// REGISTER
-// ----------------------------------------
-export const register = async (_req: Request, res: Response): Promise<void> => {
+export const register = async (req: Request, res: Response) => {
   try {
     const {
       email,
@@ -71,48 +60,48 @@ export const register = async (_req: Request, res: Response): Promise<void> => {
       longitude,
       hobbies,
       talents,
-      interests
-    }: RegisterDto = _req.body
+      interests,
+    }: RegisterDto = req.body
 
     // Validate required fields
     if (!email || !password || !username || !firstName || !lastName || !dateOfBirth || !gender || !lookingFor) {
-      res.status(400).json({
-        message: 'Email, password, username, firstName, lastName, dateOfBirth, gender, and lookingFor are required'
-      })
-      return
+      return res.status(400).json({ error: 'All required fields must be provided' })
     }
 
+    // Validate email
     if (!isValidEmail(email)) {
-      res.status(400).json({ message: 'Invalid email format' })
-      return
+      return res.status(400).json({ error: 'Invalid email format' })
     }
 
+    // Validate password
     const passwordError = getPasswordValidationError(password)
     if (passwordError) {
-      res.status(400).json({ message: passwordError })
-      return
+      return res.status(400).json({ error: passwordError })
     }
 
-    const birthDate = new Date(dateOfBirth)
-    if (!isValidAge(birthDate)) {
-      res.status(400).json({ message: 'You must be at least 18 years old to register' })
-      return
+    // Validate age
+    if (!isValidAge(new Date(dateOfBirth))) {
+      return res.status(400).json({ error: 'You must be between 18 and 100 years old to register' })
     }
 
-    const existingUser = await prisma.user.findUnique({ where: { email } })
+    // Check if email or username already exists
+    const existingUser = await prisma.user.findFirst({
+      where: {
+        OR: [{ email }, { username }],
+      },
+    })
+
     if (existingUser) {
-      res.status(409).json({ message: 'User with this email already exists' })
-      return
+      if (existingUser.email === email) {
+        return res.status(409).json({ error: 'Email already registered' })
+      }
+      return res.status(409).json({ error: 'Username already taken' })
     }
 
-    const existingUsername = await prisma.user.findUnique({ where: { username } })
-    if (existingUsername) {
-      res.status(409).json({ message: 'Username already taken' })
-      return
-    }
-
+    // Hash password
     const hashedPassword = await bcrypt.hash(password, 12)
 
+    // Create user
     const user = await prisma.user.create({
       data: {
         email,
@@ -132,131 +121,101 @@ export const register = async (_req: Request, res: Response): Promise<void> => {
         talents: talents || [],
         interests: interests || [],
       },
-      select: {
-        id: true,
-        email: true,
-        username: true,
-        firstName: true,
-        lastName: true,
-        dateOfBirth: true,
-        gender: true,
-        lookingFor: true,
-        bio: true,
-        locationCity: true,
-        locationCountry: true,
-        latitude: true,
-        longitude: true,
-        profilePictures: true,
-        hobbies: true,
-        talents: true,
-        interests: true,
-        createdAt: true,
-        updatedAt: true,
-      },
     })
 
+    // Generate tokens with actual user ID
     const { accessToken, refreshToken } = generateTokenPair(user.id)
 
-    // BEFORE: Store refresh token in DB only
-    // AFTER: Store in both DB (fallback) and Redis (primary, with TTL)
-    await Promise.all([
-      prisma.user.update({
-        where: { id: user.id },
-        data: { refreshToken, refreshTokenExpiry: getRefreshTokenExpiry() },
-      }),
-      storeRefreshToken(user.id, refreshToken),
-    ])
-
-    // BEFORE: res.json({ accessToken, refreshToken }) — tokens in response body
-    // AFTER: Set httpOnly cookies — JS cannot access these tokens
-    setAuthCookies(res, accessToken, refreshToken)
-
-    res.status(201).json({
-      message: 'Registration successful',
-      user,
-    })
-  } catch (error) {
-    console.error('Register error:', error)
-    res.status(500).json({ message: 'Error creating user' })
-  }
-}
-
-// ----------------------------------------
-// LOGIN
-// ----------------------------------------
-export const login = async (_req: Request, res: Response): Promise<void> => {
-  try {
-    const { identifier, password }: LoginDto = _req.body
-
-    if (!identifier || !password) {
-      res.status(400).json({ message: 'Email/username and password are required' })
-      return
-    }
-
-    const isEmail = identifier.includes('@')
-
-    const user = isEmail
-      ? await prisma.user.findUnique({ where: { email: identifier } })
-      : await prisma.user.findUnique({ where: { username: identifier } })
-
-    if (!user) {
-      res.status(401).json({ message: 'Invalid credentials' })
-      return
-    }
-
-    const isPasswordValid = await bcrypt.compare(password, user.password)
-    if (!isPasswordValid) {
-      res.status(401).json({ message: 'Invalid credentials' })
-      return
-    }
-
-    const { accessToken, refreshToken } = generateTokenPair(user.id)
-
-    // BEFORE: Store refresh token in DB only
-    // AFTER: Store in both DB and Redis
+    // Store refresh token in DB and Redis
     await Promise.all([
       prisma.user.update({
         where: { id: user.id },
         data: {
           refreshToken,
           refreshTokenExpiry: getRefreshTokenExpiry(),
-          lastActive: new Date(),
         },
       }),
       storeRefreshToken(user.id, refreshToken),
     ])
 
-    const { password: _, ...userWithoutPassword } = user
-
-    // BEFORE: res.json({ accessToken, refreshToken }) — tokens in response body
-    // AFTER: Set httpOnly cookies
+    // Set httpOnly cookies
     setAuthCookies(res, accessToken, refreshToken)
 
-    res.json({
+    // Return user without password (NO tokens in body)
+    const { password: _, ...userWithoutPassword } = user
+
+    return res.status(201).json({
+      message: 'Registration successful',
+      user: userWithoutPassword,
+    })
+  } catch (error) {
+    console.error('Register error:', error)
+    return res.status(500).json({ error: 'Internal server error' })
+  }
+}
+
+export const login = async (req: Request, res: Response) => {
+  try {
+    const { identifier, password }: LoginDto = req.body
+
+    if (!identifier || !password) {
+      return res.status(400).json({ error: 'Email/username and password are required' })
+    }
+
+    // Find user by email or username
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [{ email: identifier }, { username: identifier }],
+      },
+    })
+
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials' })
+    }
+
+    // Compare password
+    const isPasswordValid = await bcrypt.compare(password, user.password)
+    if (!isPasswordValid) {
+      return res.status(401).json({ error: 'Invalid credentials' })
+    }
+
+    // Generate token pair
+    const { accessToken, refreshToken } = generateTokenPair(user.id)
+
+    // Store refresh token in DB and Redis
+    await Promise.all([
+      prisma.user.update({
+        where: { id: user.id },
+        data: {
+          refreshToken,
+          refreshTokenExpiry: getRefreshTokenExpiry(),
+        },
+      }),
+      storeRefreshToken(user.id, refreshToken),
+    ])
+
+    // Set httpOnly cookies
+    setAuthCookies(res, accessToken, refreshToken)
+
+    // Return user without password
+    const { password: _, ...userWithoutPassword } = user
+
+    return res.status(200).json({
       message: 'Login successful',
       user: userWithoutPassword,
     })
   } catch (error) {
     console.error('Login error:', error)
-    res.status(500).json({ message: 'Error logging in' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }
 
-// ----------------------------------------
-// GET CURRENT USER
-// ----------------------------------------
-export const getCurrentUser = async (
-  _req: AuthRequest,
-  res: Response
-): Promise<void> => {
+export const getCurrentUser = async (req: AuthRequest, res: Response) => {
   try {
-    if (!_req.userId) {
-      res.status(401).json({ message: 'Not authenticated' })
-      return
-    }
+    const userId = req.userId
 
     const user = await prisma.user.findUnique({
-      where: { id: _req.userId },
+      where: { id: userId },
       select: {
         id: true,
         email: true,
@@ -275,260 +234,207 @@ export const getCurrentUser = async (
         hobbies: true,
         talents: true,
         interests: true,
+        preferences: true,
+        voiceIntroUrl: true,
+        voiceIntroDuration: true,
+        photoShieldEnabled: true,
+        isOnline: true,
+        lastActive: true,
+        emailVerified: true,
+        phoneVerified: true,
+        photoVerified: true,
         createdAt: true,
         updatedAt: true,
-        lastActive: true,
       },
     })
 
     if (!user) {
-      res.status(404).json({ message: 'User not found' })
-      return
+      return res.status(404).json({ error: 'User not found' })
     }
 
-    res.json(user)
+    return res.status(200).json({ user })
   } catch (error) {
     console.error('Get current user error:', error)
-    res.status(500).json({ message: 'Error fetching user' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }
 
-// ----------------------------------------
-// REFRESH TOKEN (POST /auth/refresh)
-// BEFORE: Reads refreshToken from request body, returns new tokens in body
-// AFTER: Reads refreshToken from httpOnly cookie, validates against Redis,
-//        rotates token (old one invalidated), sets new cookies
-// ----------------------------------------
-export const refreshToken = async (
-  _req: Request,
-  res: Response
-): Promise<void> => {
+export const refreshToken = async (req: Request, res: Response) => {
   try {
-    // BEFORE: const { refreshToken } = _req.body
-    // AFTER: Read from httpOnly cookie
-    const incomingRefreshToken = _req.cookies?.refresh_token
+    const token = req.cookies?.refresh_token
 
-    if (!incomingRefreshToken) {
-      res.status(401).json({ message: 'No refresh token provided' })
-      return
+    if (!token) {
+      return res.status(401).json({ error: 'Refresh token not provided' })
     }
 
-    // Verify the refresh token JWT
+    // Verify JWT
     let decoded
     try {
-      decoded = verifyToken(incomingRefreshToken)
-    } catch (error) {
-      clearAuthCookies(res)
-      res.status(401).json({ message: 'Invalid or expired refresh token' })
-      return
+      decoded = verifyToken(token)
+    } catch {
+      return res.status(401).json({ error: 'Invalid or expired refresh token' })
     }
 
-    if (decoded.type !== 'refresh') {
+    const userId = decoded.userId
+
+    // Validate against Redis
+    const isValid = await validateRefreshToken(userId, token)
+    if (!isValid) {
+      // Possible token reuse detected - revoke all tokens for this user
+      await Promise.all([
+        prisma.user.update({
+          where: { id: userId },
+          data: { refreshToken: null, refreshTokenExpiry: null },
+        }),
+        revokeRefreshToken(userId),
+      ])
       clearAuthCookies(res)
-      res.status(401).json({ message: 'Invalid token type' })
-      return
+      return res.status(401).json({ error: 'Token reuse detected. All sessions revoked.' })
     }
 
-    // BEFORE: Only checked DB for refresh token match
-    // AFTER: Check Redis first (primary), then DB (fallback) — detect token reuse
-    const isValidInRedis = await validateRefreshToken(decoded.userId, incomingRefreshToken)
-
+    // Check DB match
     const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
+      where: { id: userId },
+      select: { id: true, refreshToken: true, refreshTokenExpiry: true },
     })
 
-    if (!user || user.refreshToken !== incomingRefreshToken) {
-      // Possible token reuse attack — revoke all sessions for this user
+    if (!user || user.refreshToken !== token) {
+      // Token reuse detected - revoke all
       if (user) {
         await Promise.all([
           prisma.user.update({
-            where: { id: user.id },
+            where: { id: userId },
             data: { refreshToken: null, refreshTokenExpiry: null },
           }),
-          revokeRefreshToken(user.id),
+          revokeRefreshToken(userId),
         ])
       }
       clearAuthCookies(res)
-      res.status(401).json({ message: 'Invalid refresh token — session revoked' })
-      return
+      return res.status(401).json({ error: 'Token reuse detected. All sessions revoked.' })
     }
 
-    if (!isValidInRedis) {
+    // Check expiry
+    if (user.refreshTokenExpiry && user.refreshTokenExpiry < new Date()) {
       clearAuthCookies(res)
-      res.status(401).json({ message: 'Refresh token revoked' })
-      return
+      return res.status(401).json({ error: 'Refresh token expired' })
     }
 
-    if (user.refreshTokenExpiry && new Date(user.refreshTokenExpiry) < new Date()) {
-      clearAuthCookies(res)
-      res.status(401).json({ message: 'Refresh token expired' })
-      return
-    }
+    // Rotate token pair
+    const { accessToken: newAccessToken, refreshToken: newRefreshToken } = generateTokenPair(userId)
 
-    // ROTATION: Generate new token pair, invalidate old refresh token
-    const tokens = generateTokenPair(user.id)
-
+    // Store new refresh token
     await Promise.all([
       prisma.user.update({
-        where: { id: user.id },
+        where: { id: userId },
         data: {
-          refreshToken: tokens.refreshToken,
+          refreshToken: newRefreshToken,
           refreshTokenExpiry: getRefreshTokenExpiry(),
-          lastActive: new Date(),
         },
       }),
-      storeRefreshToken(user.id, tokens.refreshToken),
+      storeRefreshToken(userId, newRefreshToken),
     ])
 
-    // BEFORE: res.json({ accessToken, refreshToken }) — tokens in body
-    // AFTER: Set new httpOnly cookies
-    setAuthCookies(res, tokens.accessToken, tokens.refreshToken)
+    // Set new cookies
+    setAuthCookies(res, newAccessToken, newRefreshToken)
 
-    res.json({ message: 'Token refreshed successfully' })
+    return res.status(200).json({ message: 'Token refreshed successfully' })
   } catch (error) {
     console.error('Refresh token error:', error)
-    res.status(500).json({ message: 'Error refreshing token' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }
 
-// ----------------------------------------
-// LOGOUT (POST /auth/logout)
-// BEFORE: Only cleared refresh token from DB
-// AFTER: Clear from Redis + DB + clear httpOnly cookies
-// ----------------------------------------
-export const logout = async (
-  _req: AuthRequest,
-  res: Response
-): Promise<void> => {
+export const logout = async (req: AuthRequest, res: Response) => {
   try {
-    if (!_req.userId) {
-      res.status(401).json({ message: 'Not authenticated' })
-      return
-    }
+    const userId = req.userId!
 
-    // BEFORE: Only cleared DB
-    // AFTER: Revoke from Redis + DB + clear cookies
+    // Clear DB and Redis
     await Promise.all([
       prisma.user.update({
-        where: { id: _req.userId },
+        where: { id: userId },
         data: { refreshToken: null, refreshTokenExpiry: null },
       }),
-      revokeRefreshToken(_req.userId),
+      revokeRefreshToken(userId),
     ])
 
+    // Clear cookies
     clearAuthCookies(res)
 
-    res.json({ message: 'Logged out successfully' })
+    return res.status(200).json({ message: 'Logged out successfully' })
   } catch (error) {
     console.error('Logout error:', error)
-    res.status(500).json({ message: 'Error logging out' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }
 
-// ----------------------------------------
-// FORGOT PASSWORD
-// ----------------------------------------
-export const forgotPassword = async (
-  _req: Request,
-  res: Response
-): Promise<void> => {
+export const forgotPassword = async (req: Request, res: Response) => {
   try {
-    const { email } = _req.body
+    const { email } = req.body
 
     if (!email) {
-      res.status(400).json({ message: 'Email is required' })
-      return
+      return res.status(400).json({ error: 'Email is required' })
     }
 
-    // Validate email format
-    if (!isValidEmail(email)) {
-      res.status(400).json({ message: 'Invalid email format' })
-      return
-    }
+    const user = await prisma.user.findUnique({ where: { email } })
 
-    // Find user by email
-    const user = await prisma.user.findUnique({
-      where: { email },
-    })
-
-    // Always return success message for security (don't reveal if email exists)
+    // Always return success to prevent email enumeration
     if (!user) {
-      res.json({
-        message: 'If an account with that email exists, a password reset link has been sent',
-      })
-      return
+      return res.status(200).json({ message: 'If an account with that email exists, a reset link has been sent' })
     }
 
     // Generate reset token
     const resetToken = generateResetToken()
-    const resetTokenExpiry = getResetTokenExpiry()
 
-    // Save reset token to database
+    // Store in DB
     await prisma.user.update({
       where: { id: user.id },
       data: {
         resetPasswordToken: resetToken,
-        resetPasswordExpiry: resetTokenExpiry,
+        resetPasswordExpiry: getResetTokenExpiry(),
       },
     })
 
-    // TODO: Send email with reset link
-    // For now, we'll just return the token (in production, this should be emailed)
-    console.log(`Password reset token for ${email}: ${resetToken}`)
-    console.log(`Reset link: http://localhost:5173/reset-password/${resetToken}`)
+    // Log reset link (in production, this would send an email)
+    const resetLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/reset-password?token=${resetToken}`
+    console.log(`Password reset link for ${email}: ${resetLink}`)
 
-    res.json({
-      message: 'If an account with that email exists, a password reset link has been sent',
-      // TODO: Remove in production - only for testing
-      resetToken: process.env.NODE_ENV === 'development' ? resetToken : undefined,
-    })
+    return res.status(200).json({ message: 'If an account with that email exists, a reset link has been sent' })
   } catch (error) {
     console.error('Forgot password error:', error)
-    res.status(500).json({ message: 'Error processing forgot password request' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }
 
-// ----------------------------------------
-// RESET PASSWORD
-// ----------------------------------------
-export const resetPassword = async (
-  _req: Request,
-  res: Response
-): Promise<void> => {
+export const resetPassword = async (req: Request, res: Response) => {
   try {
-    const { token, newPassword } = _req.body
+    const { token, password } = req.body
 
-    if (!token || !newPassword) {
-      res.status(400).json({ message: 'Token and new password are required' })
-      return
+    if (!token || !password) {
+      return res.status(400).json({ error: 'Token and new password are required' })
     }
 
-    // Validate password strength
-    const passwordError = getPasswordValidationError(newPassword)
+    // Validate password
+    const passwordError = getPasswordValidationError(password)
     if (passwordError) {
-      res.status(400).json({ message: passwordError })
-      return
+      return res.status(400).json({ error: passwordError })
     }
 
     // Find user with valid reset token
     const user = await prisma.user.findFirst({
       where: {
         resetPasswordToken: token,
-        resetPasswordExpiry: {
-          gt: new Date(), // Token must not be expired
-        },
+        resetPasswordExpiry: { gt: new Date() },
       },
     })
 
     if (!user) {
-      res.status(400).json({ message: 'Invalid or expired reset token' })
-      return
+      return res.status(400).json({ error: 'Invalid or expired reset token' })
     }
 
     // Hash new password
-    const hashedPassword = await bcrypt.hash(newPassword, 12)
+    const hashedPassword = await bcrypt.hash(password, 12)
 
-    // Update password and clear reset token + revoke refresh tokens everywhere
+    // Update password, clear reset token, and revoke refresh tokens
     await Promise.all([
       prisma.user.update({
         where: { id: user.id },
@@ -543,9 +449,9 @@ export const resetPassword = async (
       revokeRefreshToken(user.id),
     ])
 
-    res.json({ message: 'Password reset successfully. Please login with your new password.' })
+    return res.status(200).json({ message: 'Password reset successfully' })
   } catch (error) {
     console.error('Reset password error:', error)
-    res.status(500).json({ message: 'Error resetting password' })
+    return res.status(500).json({ error: 'Internal server error' })
   }
 }

@@ -24,14 +24,7 @@ cloudinary.config({
 })
 
 /**
- * Upload a file buffer to Cloudinary
- * @param fileBuffer - The file buffer to upload
- * @param folder - The folder to upload to (default: 'profile-pictures')
- * @returns The secure URL of the uploaded image
- *
- * BEFORE: resource_type 'auto', 1000x1000 limit, no EXIF stripping
- * AFTER:  resource_type 'image' (enforce image only), 800x800 eager resize,
- *         EXIF metadata stripped via image_metadata:false + flags: 'strip_profile'
+ * Upload an image buffer to Cloudinary
  */
 export const uploadToCloudinary = async (
   fileBuffer: Buffer,

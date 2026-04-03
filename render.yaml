@@ -5,49 +5,53 @@ services:
     plan: starter
     region: oregon
     buildCommand: npm install && npx prisma generate && npx prisma migrate deploy && npm run build
-    startCommand: npm start
+    startCommand: node dist/server.js
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
-      - key: postgresql://postgres.jjaavtelyfbteukkykkj:Franklineomollo5@aws-1-eu-north-1.pooler.supabase.com:6543/postgres
+      - key: DATABASE_URL
         fromDatabase:
-          name: 2-Match
+          name: 2match-db
           property: connectionString
-      - key: db1851a076494873628baf7a456f09c369ee94dbe0b6e2b287db654b8ba9f40f0307a6905360e38398c042bb4d491a17768a20eaeb99d5cb54803059265a7ed2
+      - key: DIRECT_URL
+        fromDatabase:
+          name: 2match-db
+          property: connectionString
+      - key: JWT_SECRET
         generateValue: true
-      - key: 565a1e1e8bb969807a2a2b3d2e5fc7d75ede5a637820d60cc28858b283f864c8c5295d37f1ac1ab7bc91ed21717145f7533e0bb496763ca9ca9904064d6e6137
-        generateValue: true
-      # - key: PORT
-         # value: 3000
-      # Add your other environment variables here
-      - key: dfr07z2c6
+      - key: CORS_ORIGIN
+        sync: false  # Set in Render dashboard: https://your-frontend.vercel.app
+      - key: CLIENT_URL
+        sync: false  # Same as CORS_ORIGIN
+      # Cloudinary
+      - key: CLOUDINARY_CLOUD_NAME
         sync: false
-      - key: 666683934798426
+      - key: CLOUDINARY_API_KEY
         sync: false
-      - key: TMlf6J_n4ncZh-qEP-U6ns64Ceo
+      - key: CLOUDINARY_API_SECRET
         sync: false
+      # Stripe
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PREMIUM_PRICE_ID
+        sync: false
+      - key: STRIPE_PLATINUM_PRICE_ID
+        sync: false
+      # Redis (uncomment when Redis service is added)
       # - key: REDIS_URL
       #   fromService:
       #     type: redis
       #     name: 2match-redis
       #     property: connectionString
+      # Sentry (optional)
       # - key: SENTRY_DSN
       #   sync: false
-      # - key: CORS_ORIGIN
-      #   value: https://yourdomain.com
-      # - key: FRONTEND_URL
-      #   value: https://yourdomain.com
 
 databases:
   - name: 2match-db
-    databaseName: 2match
+    databaseName: twomatch
     plan: starter
     region: oregon
-
-# Optional: Add Redis if needed
-# - type: redis
-#   name: 2match-redis
-#   plan: starter
-#   region: oregon
-#   maxmemoryPolicy: allkeys-lru
