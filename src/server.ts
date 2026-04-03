@@ -52,6 +52,7 @@ import { startBoostResetJob, stopBoostResetJob } from './jobs/boostReset'
 dotenv.config()
 
 const app = express()
+app.set('trust proxy', 1)  // Render/Vercel sit behind a reverse proxy — required for express-rate-limit & secure cookies
 const httpServer = http.createServer(app)
 const PORT = process.env.PORT || 3000
 
