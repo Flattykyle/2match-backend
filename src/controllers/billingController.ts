@@ -13,7 +13,7 @@ const stripe: Stripe | null = process.env.STRIPE_SECRET_KEY
   : null
 
 if (!stripe) {
-  console.warn('⚠️  STRIPE_SECRET_KEY not set — billing endpoints will return 503')
+  console.log('Billing: disabled (coming soon)')
 }
 
 /** Check whether Stripe is configured and available */
