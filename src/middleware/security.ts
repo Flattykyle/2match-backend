@@ -8,20 +8,9 @@ import hpp from 'hpp'
  * Helps protect against common web vulnerabilities
  */
 export const helmetConfig = helmet({
-  // Content Security Policy
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", 'data:', 'https://res.cloudinary.com'],
-      connectSrc: ["'self'"],
-      fontSrc: ["'self'"],
-      objectSrc: ["'none'"],
-      mediaSrc: ["'self'"],
-      frameSrc: ["'none'"],
-    },
-  },
+  // Content Security Policy — disabled for API-only server.
+  // CSP is enforced on the frontend (vercel.json headers).
+  contentSecurityPolicy: false,
   // Cross-Origin policies
   crossOriginEmbedderPolicy: false,
   crossOriginResourcePolicy: { policy: 'cross-origin' },
