@@ -73,7 +73,7 @@ export async function exchangeCodeForTokens(code: string): Promise<{
     throw new Error(`Spotify token exchange failed: ${err}`)
   }
 
-  const data = await response.json()
+  const data = await response.json() as { access_token: string; refresh_token: string; expires_in: number }
   return {
     accessToken: data.access_token,
     refreshToken: data.refresh_token,
@@ -104,7 +104,7 @@ export async function refreshSpotifyToken(encryptedRefreshToken: string): Promis
     throw new Error('Spotify token refresh failed')
   }
 
-  const data = await response.json()
+  const data = await response.json() as { access_token: string; refresh_token?: string; expires_in: number }
   return {
     accessToken: data.access_token,
     refreshToken: data.refresh_token || refreshToken,

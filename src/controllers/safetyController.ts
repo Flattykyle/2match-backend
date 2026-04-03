@@ -325,10 +325,6 @@ export const respondToDateCheckin = async (
 
     // Emit 'safety:confirmed' to match partner
     if (checkin.match) {
-      const partnerId = checkin.match.userId1 === req.userId
-        ? checkin.match.userId2
-        : checkin.match.userId1
-
       const io = getSocketIO()
       if (io) {
         io.to(`match:${checkin.match.id}`).emit('safety:confirmed', {
